@@ -1,9 +1,12 @@
 # ESP-IDF build output
 build/
 sdkconfig
+sdkconfig.old
 
 # Managed components (fetched at build time)
 managed_components/
+.deps/
+.env.mk
 
 # IDE / OS
 .vscode/
@@ -17,6 +20,7 @@ managed_components/
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # CMake
 CMakeCache.txt

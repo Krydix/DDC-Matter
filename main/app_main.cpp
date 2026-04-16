@@ -2,6 +2,8 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 extern "C" {
 #include "config.h"
@@ -166,6 +168,31 @@ static esp_err_t refresh_db_cb(void *ctx)
     return detect_monitor(app, true);
 }
 
+/* Called once when the device first gets an IP address (post-commissioning).
+ * If we previously fell through to DDC-caps or MCCS defaults, try the remote
+ * ddccontrol-db fetch now that network is available.  Runs in a dedicated task
+ * so I2C is not driven from the Matter event-loop task. */
+static esp_err_t matter_network_ready(void *ctx)
+{
+    app_context_t *app = static_cast<app_context_t *>(ctx);
+    if (app->config.db_match) {
+        return ESP_OK;  /* already have a profile — nothing to do */
+    }
+    /* Heap-allocate ctx so the lambda outlives this stack frame */
+    struct RedetectArg { app_context_t *app; };
+    auto *arg = new RedetectArg{app};
+    xTaskCreate([](void *pvArg) {
+        auto *a = static_cast<RedetectArg *>(pvArg);
+        esp_err_t err = detect_monitor(a->app, false);
+        if (err != ESP_OK) {
+            ESP_LOGW("app_main", "post-commissioning re-detect failed: %s", esp_err_to_name(err));
+        }
+        delete a;
+        vTaskDelete(NULL);
+    }, "redetect", 8192, arg, 5, NULL);
+    return ESP_OK;
+}
+
 extern "C" void app_main(void)
 {
     static app_context_t app = {};
@@ -178,6 +205,7 @@ extern "C" void app_main(void)
     matter_callbacks_t callbacks = {};
     callbacks.level_write = matter_level_write;
     callbacks.mode_write = matter_mode_write;
+    callbacks.network_ready = matter_network_ready;
     callbacks.ctx = &app;
     ESP_ERROR_CHECK(matter_start(&app.config, &app.matter, &callbacks));
 

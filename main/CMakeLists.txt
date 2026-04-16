@@ -13,6 +13,13 @@ idf_component_register(
     REQUIRES
         esp_matter
         mdns
+        driver
+        nvs_flash
+        esp_http_client
+        esp_http_server
+        json
+        esp-tls
+        freertos
     EMBED_FILES
         "../frontend/index.html"
 )

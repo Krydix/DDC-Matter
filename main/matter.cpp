@@ -49,10 +49,15 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
 
 static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 {
+    static bool s_network_ready_fired = false;
     (void)arg;
     switch (event->Type) {
     case chip::DeviceLayer::DeviceEventType::kInterfaceIpAddressChanged:
         ESP_LOGI(TAG, "IP address changed");
+        if (!s_network_ready_fired && g_callbacks.network_ready) {
+            s_network_ready_fired = true;
+            g_callbacks.network_ready(g_callbacks.ctx);
+        }
         break;
     default:
         break;
@@ -80,7 +85,7 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
     contrast_cfg.level_control.current_level = 128;
     endpoint_t *contrast = endpoint::dimmable_light::create(node, &contrast_cfg, ENDPOINT_FLAG_NONE, nullptr);
 
-    endpoint_t *input = endpoint::create(node, ENDPOINT_FLAG_NONE);
+    endpoint_t *input = endpoint::create(node, ENDPOINT_FLAG_NONE, nullptr);
     cluster::descriptor::config_t descriptor_cfg;
     cluster::identify::config_t identify_cfg;
     cluster::descriptor::create(input, &descriptor_cfg, CLUSTER_FLAG_SERVER);

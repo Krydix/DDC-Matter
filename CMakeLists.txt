@@ -27,6 +27,6 @@ set(EXTRA_COMPONENT_DIRS
 
 project(ddc_matter_display_controller)
 
-idf_build_set_property(CXX_COMPILE_OPTIONS "-std=gnu++17;-Os;-DCHIP_HAVE_CONFIG_H;-Wno-overloaded-virtual" APPEND)
-idf_build_set_property(C_COMPILE_OPTIONS "-Os" APPEND)
+idf_build_set_property(CXX_COMPILE_OPTIONS "-std=gnu++17;-Os;-DCHIP_HAVE_CONFIG_H;-Wno-overloaded-virtual;-Wno-error=unused-result" APPEND)
+idf_build_set_property(C_COMPILE_OPTIONS "-Os;-Wno-error=unused-result" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-format-nonliteral;-Wno-format-security" APPEND)

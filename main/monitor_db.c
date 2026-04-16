@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "esp_check.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 
 #include "ddc.h"
@@ -46,6 +47,7 @@ esp_err_t monitor_db_fetch_profile(const char *pnp_id, monitor_profile_t *profil
         .buffer_size = 1024,
         .buffer_size_tx = 512,
         .user_agent = "esp32-display-switcher/1.0",
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     ESP_RETURN_ON_FALSE(client != NULL, ESP_ERR_NO_MEM, "monitor_db", "client init failed");
@@ -76,7 +78,7 @@ esp_err_t monitor_db_fetch_profile(const char *pnp_id, monitor_profile_t *profil
 fail:
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    return ESP_FAIL;
+    return ret;
 }
 
 size_t monitor_db_parse_input_values(const char *caps, input_slot_t *slots, size_t max_slots)

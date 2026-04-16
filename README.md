@@ -102,14 +102,40 @@ CMakeLists.txt
 
 ---
 
+## Setup & Build
+
+The repo now includes a consistent setup and build flow:
+
+```bash
+make dev-init
+make build
+make flash PORT=/dev/tty.usbserial-0001
+```
+
+What `make dev-init` does:
+
+- clones pinned copies of ESP-IDF and esp-matter into `.deps/`
+- installs ESP-IDF toolchain support for `esp32`
+- bootstraps the connectedhomeip / Pigweed environment required by esp-matter
+- installs a user-local `cmake<4`, because ESP-IDF v5.4.1 is not compatible with Homebrew CMake 4.x on this machine
+- writes `.env.mk` so subsequent `make` targets reuse the same paths consistently
+
+Available build targets:
+
+- `make build`
+- `make reconfigure`
+- `make clean`
+- `make fullclean`
+- `make size`
+- `make flash PORT=...`
+- `make monitor PORT=...`
+- `make flash-monitor PORT=...`
+
+---
+
 ## Build Status
 
-The project structure and application code are complete. The current build blocker is an upstream **connectedhomeip / esp-matter** compilation issue:
-
-- `BLEManagerImpl.cpp` triggers `-Werror=unused-result` on ignored `CHIP_ERROR` return values during Matter stack compilation
-- This is in the third-party Matter stack, not in project source files
-
-All project-level code compiles cleanly. Once the upstream Werror issue is resolved (either by a newer esp-matter release or a local patch), the firmware should produce a flashable binary.
+The firmware now builds successfully into a flashable image for ESP32 classic. The current partition layout uses a custom `partitions.csv` with a `0x300000` factory app slot so the Matter image fits in 4 MB flash.
 
 ---
 
