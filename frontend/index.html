@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Display Switcher</title>
+  <style>
+    :root {
+      --bg: #f2efe7;
+      --card: rgba(255,255,255,0.84);
+      --line: #d5cbb8;
+      --ink: #1f2430;
+      --accent: #b2522d;
+      --accent-2: #2f6b66;
+      --muted: #6d6b66;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(178,82,45,0.22), transparent 35%),
+        radial-gradient(circle at bottom right, rgba(47,107,102,0.22), transparent 30%),
+        linear-gradient(145deg, #efe6d6, #f5f1ea 48%, #ebe5da);
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .shell {
+      max-width: 920px;
+      margin: 0 auto;
+      background: var(--card);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,0.4);
+      border-radius: 28px;
+      box-shadow: 0 28px 60px rgba(38,31,23,0.16);
+      overflow: hidden;
+    }
+    header {
+      padding: 28px 28px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0;
+      font-family: Georgia, serif;
+      font-size: clamp(2rem, 4vw, 3.1rem);
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+    .sub {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.98rem;
+    }
+    main {
+      padding: 24px 28px 32px;
+      display: grid;
+      gap: 22px;
+    }
+    .grid {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px;
+      background: rgba(255,255,255,0.66);
+    }
+    .label {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.74rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .big {
+      font-size: 1.3rem;
+      font-weight: 700;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.9);
+      font: inherit;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      color: white;
+      background: var(--accent);
+      transition: transform 180ms ease, opacity 180ms ease;
+    }
+    button.secondary { background: var(--accent-2); }
+    button:hover { transform: translateY(-1px); }
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .status { color: var(--muted); font-size: 0.95rem; }
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+      header, main { padding-left: 16px; padding-right: 16px; }
+      table, thead, tbody, tr, th, td { display: block; }
+      th { padding-bottom: 4px; }
+      td { padding-top: 4px; }
+      tr { border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>Display Switcher</h1>
+      <div class="sub">Commission with Matter, then tune DDC/CI mappings here.</div>
+    </header>
+    <main>
+      <section class="grid">
+        <div class="panel">
+          <div class="label">Monitor</div>
+          <div class="big" id="monitor-name">Loading...</div>
+        </div>
+        <div class="panel">
+          <div class="label">PnP ID</div>
+          <div class="big" id="pnp-id">-</div>
+        </div>
+        <div class="panel">
+          <div class="label">Database Status</div>
+          <div class="big" id="db-status">-</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="label">Inputs</div>
+        <table>
+          <thead>
+            <tr><th>Mode</th><th>Hex Value</th><th>Name</th><th>Action</th></tr>
+          </thead>
+          <tbody id="inputs-body"></tbody>
+        </table>
+      </section>
+
+      <section class="grid">
+        <div class="panel">
+          <div class="label">Brightness VCP</div>
+          <input id="brightness-vcp" type="number" min="0" max="255">
+        </div>
+        <div class="panel">
+          <div class="label">Contrast VCP</div>
+          <input id="contrast-vcp" type="number" min="0" max="255">
+        </div>
+      </section>
+
+      <section class="actions">
+        <button id="save-btn">Save To NVS</button>
+        <button class="secondary" id="detect-btn">Re-run Detect</button>
+        <button class="secondary" id="refresh-btn">Refresh From Database</button>
+      </section>
+
+      <div class="status" id="status">Waiting for device...</div>
+    </main>
+  </div>
+
+  <script>
+    const state = { inputs: [] };
+
+    function setStatus(text) {
+      document.getElementById("status").textContent = text;
+    }
+
+    function render(config) {
+      state.inputs = config.inputs || [];
+      document.getElementById("monitor-name").textContent = config.monitorName || "Display";
+      document.getElementById("pnp-id").textContent = config.pnpId || "-";
+      document.getElementById("db-status").textContent = config.dbMatch ? "Matched" : "Fallback";
+      document.getElementById("brightness-vcp").value = config.brightnessVcp ?? 16;
+      document.getElementById("contrast-vcp").value = config.contrastVcp ?? 18;
+
+      const body = document.getElementById("inputs-body");
+      body.innerHTML = "";
+      state.inputs.forEach((input, index) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>Input ${index + 1}</td>
+          <td><input data-kind="value" data-index="${index}" type="number" min="0" max="255" value="${input.value}"></td>
+          <td><input data-kind="name" data-index="${index}" value="${input.name || ""}"></td>
+          <td><button data-test="${index}">Test</button></td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    async function loadConfig(url = "/api/config") {
+      const response = await fetch(url);
+      const data = await response.json();
+      render(data);
+      setStatus(`Loaded ${data.monitorName || "display"} (${data.pnpId || "-"})`);
+    }
+
+    async function saveConfig() {
+      const inputs = state.inputs.map((input, index) => ({
+        value: Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value),
+        name: document.querySelector(`[data-kind="name"][data-index="${index}"]`).value
+      }));
+      const payload = {
+        brightnessVcp: Number(document.getElementById("brightness-vcp").value),
+        contrastVcp: Number(document.getElementById("contrast-vcp").value),
+        inputs
+      };
+      setStatus("Saving...");
+      await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      setStatus("Saved to NVS");
+      await loadConfig();
+    }
+
+    document.getElementById("save-btn").addEventListener("click", saveConfig);
+    document.getElementById("detect-btn").addEventListener("click", async () => {
+      setStatus("Detecting monitor capabilities...");
+      await loadConfig("/api/detect");
+    });
+    document.getElementById("refresh-btn").addEventListener("click", async () => {
+      setStatus("Refreshing ddccontrol-db profile...");
+      await loadConfig("/api/detect?refresh_db=1");
+    });
+    document.getElementById("inputs-body").addEventListener("click", async (event) => {
+      const index = event.target.getAttribute("data-test");
+      if (index === null) return;
+      const value = Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value);
+      setStatus(`Testing input value 0x${value.toString(16).padStart(2, "0")}`);
+      await fetch("/api/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value })
+      });
+      setStatus("Test command sent");
+    });
+
+    loadConfig().catch((error) => {
+      console.error(error);
+      setStatus("Unable to load configuration");
+    });
+  </script>
+</body>
+</html>
