@@ -126,10 +126,26 @@ Available build targets:
 - `make reconfigure`
 - `make clean`
 - `make fullclean`
+- `make detect-port`
 - `make size`
-- `make flash PORT=...`
-- `make monitor PORT=...`
-- `make flash-monitor PORT=...`
+- `make flash`
+- `make monitor`
+- `make flash-monitor`
+- `make web-installer`
+
+`make flash`, `make monitor`, and `make flash-monitor` auto-detect a serial port on macOS and Linux. If more than one candidate is present, set `PORT=/dev/...` explicitly.
+
+---
+
+## Web Installer
+
+A GitHub Pages web flasher is now supported via `esp-web-tools`.
+
+- Local staging: `make web-installer`
+- Local output: `build/web-installer/`
+- Auto deployment: `.github/workflows/pages.yml` builds the firmware on pushes to `main` and deploys the installer page to GitHub Pages
+
+The published page can flash the latest ESP32 firmware directly from Chrome or Edge using Web Serial, without requiring users to install ESP-IDF locally.
 
 ---
 

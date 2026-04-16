@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DDC-Matter Web Installer</title>
+  <meta name="description" content="Flash DDC-Matter firmware onto an ESP32 directly from the browser.">
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <style>
+    :root {
+      --bg: #f1efe7;
+      --panel: rgba(255, 252, 245, 0.92);
+      --ink: #18211c;
+      --muted: #5a655e;
+      --accent: #0d6b53;
+      --accent-strong: #084b3b;
+      --line: rgba(24, 33, 28, 0.12);
+      --esp-tools-button-color: var(--accent);
+      --esp-tools-button-text-color: #f8f6f0;
+      --esp-tools-button-border-radius: 999px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Avenir Next", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(13, 107, 83, 0.18), transparent 32%),
+        radial-gradient(circle at bottom right, rgba(214, 151, 79, 0.18), transparent 28%),
+        var(--bg);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 48px 20px 64px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 24px;
+      grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.9fr);
+      align-items: stretch;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 18px 45px rgba(24, 33, 28, 0.08);
+    }
+
+    .intro {
+      padding: 32px;
+    }
+
+    .eyebrow {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(13, 107, 83, 0.1);
+      color: var(--accent-strong);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 18px 0 14px;
+      font-size: clamp(2.2rem, 5vw, 4.3rem);
+      line-height: 0.94;
+      letter-spacing: -0.04em;
+    }
+
+    p {
+      margin: 0;
+      line-height: 1.6;
+      color: var(--muted);
+      font-size: 1rem;
+    }
+
+    .installer {
+      padding: 28px;
+      display: grid;
+      gap: 18px;
+      align-content: center;
+      justify-items: start;
+    }
+
+    .button-shell {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 220px;
+      min-height: 56px;
+      border: none;
+      border-radius: 999px;
+      padding: 0 24px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #f8f6f0;
+      font: inherit;
+      font-weight: 700;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+
+    .meta {
+      display: grid;
+      gap: 10px;
+      margin-top: 26px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+
+    .meta-item,
+    .section {
+      padding: 22px;
+    }
+
+    .meta-label,
+    .section h2 {
+      margin: 0 0 10px;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent-strong);
+    }
+
+    .meta-value {
+      font-size: 1.05rem;
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .grid {
+      margin-top: 24px;
+      display: grid;
+      gap: 18px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+
+    ol,
+    ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    a {
+      color: var(--accent-strong);
+      text-decoration-thickness: 0.08em;
+      text-underline-offset: 0.14em;
+    }
+
+    .downloads a {
+      display: block;
+      margin-bottom: 10px;
+      font-weight: 600;
+    }
+
+    .note {
+      margin-top: 24px;
+      padding: 18px 22px;
+      border-radius: 20px;
+      background: rgba(13, 107, 83, 0.08);
+      border: 1px solid rgba(13, 107, 83, 0.16);
+      color: var(--accent-strong);
+    }
+
+    code {
+      font-family: "SFMono-Regular", "JetBrains Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    @media (max-width: 760px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .shell {
+        padding: 24px 14px 40px;
+      }
+
+      .intro,
+      .installer {
+        padding: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <article class="card intro">
+        <span class="eyebrow">Browser Flasher</span>
+        <h1>DDC-Matter for ESP32</h1>
+        <p>
+          Flash the latest DDC-Matter firmware directly from Chrome or Edge using Web Serial.
+          This installer writes the bootloader, partition table, and app image for the ESP32 target.
+        </p>
+
+        <div class="meta">
+          <div class="card meta-item">
+            <div class="meta-label">Firmware Version</div>
+            <div class="meta-value" id="firmware-version">Loading...</div>
+          </div>
+          <div class="card meta-item">
+            <div class="meta-label">Build Date</div>
+            <div class="meta-value" id="build-date">Loading...</div>
+          </div>
+        </div>
+      </article>
+
+      <aside class="card installer">
+        <h2 style="margin:0;font-size:1.1rem;letter-spacing:-0.02em;">Install Latest Firmware</h2>
+        <p>Connect the ESP32 over USB, close any serial monitor, then start the installer.</p>
+        <esp-web-install-button manifest="./manifest.json">
+          <button class="button-shell" slot="activate">Install Firmware</button>
+          <span slot="unsupported">Use desktop Chrome or Edge over HTTPS to flash over Web Serial.</span>
+          <span slot="not-allowed">This page must be opened over HTTPS or localhost for Web Serial to work.</span>
+        </esp-web-install-button>
+        <p>After flashing, use the device’s BLE commissioning flow, then open the web UI exposed by the firmware.</p>
+      </aside>
+    </section>
+
+    <section class="grid">
+      <article class="card section">
+        <h2>Before You Start</h2>
+        <ol>
+          <li>Use a USB data cable, not a charge-only cable.</li>
+          <li>Disconnect any app using the serial port, including terminal monitors.</li>
+          <li>If multiple serial devices are attached, choose the ESP32 when prompted.</li>
+          <li>After install, replug the board if your browser does not reconnect automatically.</li>
+        </ol>
+      </article>
+
+      <article class="card section downloads">
+        <h2>Manual Downloads</h2>
+        <a href="./firmware/ddc_matter_display_controller.bin">App Image</a>
+        <a href="./firmware/bootloader.bin">Bootloader</a>
+        <a href="./firmware/partition-table.bin">Partition Table</a>
+        <a href="./firmware/flasher_args.json">Flash Metadata</a>
+      </article>
+    </section>
+
+    <div class="note">
+      GitHub Pages hosting gives you a zero-install browser flasher. On each push to <code>main</code>, GitHub Actions can rebuild the firmware and redeploy this page with the latest binaries.
+    </div>
+  </main>
+
+  <script>
+    fetch('./build-info.json')
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('build-info unavailable')))
+      .then((info) => {
+        document.getElementById('firmware-version').textContent = info.version || 'unknown';
+        document.getElementById('build-date').textContent = info.builtAt || 'unknown';
+      })
+      .catch(() => {
+        document.getElementById('firmware-version').textContent = 'unknown';
+        document.getElementById('build-date').textContent = 'unknown';
+      });
+  </script>
+</body>
+</html>
