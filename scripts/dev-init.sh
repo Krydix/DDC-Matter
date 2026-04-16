@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPS_DIR="${DEPS_DIR:-${ROOT_DIR}/.deps}"
 ESP_IDF_VERSION="${ESP_IDF_VERSION:-v5.4.1}"
-ESP_MATTER_VERSION="${ESP_MATTER_VERSION:-v1.4.2}"
+ESP_MATTER_VERSION="${ESP_MATTER_VERSION:-release/v1.4.2}"
 IDF_PATH="${IDF_PATH:-${DEPS_DIR}/esp-idf}"
 ESP_MATTER_PATH="${ESP_MATTER_PATH:-${DEPS_DIR}/esp-matter}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -36,19 +36,36 @@ clone_or_update_repo() {
     local repo_dir="$2"
     local repo_ref="$3"
     local recursive="$4"
+    local resolved_fetch_ref=""
+    local resolved_checkout_ref=""
+
+    if git ls-remote --exit-code --heads "$repo_url" "$repo_ref" >/dev/null 2>&1; then
+        resolved_fetch_ref="refs/heads/${repo_ref}"
+        resolved_checkout_ref="FETCH_HEAD"
+    elif git ls-remote --exit-code --tags "$repo_url" "$repo_ref" >/dev/null 2>&1; then
+        resolved_fetch_ref="refs/tags/${repo_ref}"
+        resolved_checkout_ref="FETCH_HEAD"
+    elif git ls-remote --exit-code --tags "$repo_url" "${repo_ref}^{}" >/dev/null 2>&1; then
+        resolved_fetch_ref="refs/tags/${repo_ref}^{}"
+        resolved_checkout_ref="FETCH_HEAD"
+    else
+        fail "unable to resolve ${repo_ref} in ${repo_url}"
+    fi
 
     if [[ ! -d "$repo_dir/.git" ]]; then
         log "Cloning $(basename "$repo_dir") at ${repo_ref}"
+        git init "$repo_dir" >/dev/null
+        git -C "$repo_dir" remote add origin "$repo_url"
+        git -C "$repo_dir" fetch --depth 1 origin "$resolved_fetch_ref"
+        git -C "$repo_dir" checkout --force "$resolved_checkout_ref"
         if [[ "$recursive" == "1" ]]; then
-            git clone --depth 1 --branch "$repo_ref" --recursive --shallow-submodules "$repo_url" "$repo_dir"
-        else
-            git clone --depth 1 --branch "$repo_ref" "$repo_url" "$repo_dir"
+            git -C "$repo_dir" submodule update --init --recursive --depth 1
         fi
         return
     fi
 
     log "Updating $(basename "$repo_dir") to ${repo_ref}"
-    git -C "$repo_dir" fetch --depth 1 origin "$repo_ref"
+    git -C "$repo_dir" fetch --depth 1 origin "$resolved_fetch_ref"
     git -C "$repo_dir" checkout --force FETCH_HEAD
     if [[ "$recursive" == "1" ]]; then
         git -C "$repo_dir" submodule update --init --recursive --depth 1
