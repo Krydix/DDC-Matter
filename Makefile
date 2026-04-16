@@ -3,8 +3,10 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 -include $(ROOT_DIR)/.env.mk
 
 DEPS_DIR ?= $(ROOT_DIR)/.deps
-IDF_PATH ?= $(DEPS_DIR)/esp-idf
-ESP_MATTER_PATH ?= $(DEPS_DIR)/esp-matter
+DEFAULT_IDF_PATH := $(firstword $(wildcard $(ROOT_DIR)/.deps/esp-idf $(HOME)/esp/esp-idf))
+DEFAULT_ESP_MATTER_PATH := $(firstword $(wildcard $(ROOT_DIR)/.deps/esp-matter $(HOME)/esp/esp-matter))
+IDF_PATH ?= $(if $(DEFAULT_IDF_PATH),$(DEFAULT_IDF_PATH),$(DEPS_DIR)/esp-idf)
+ESP_MATTER_PATH ?= $(if $(DEFAULT_ESP_MATTER_PATH),$(DEFAULT_ESP_MATTER_PATH),$(DEPS_DIR)/esp-matter)
 PYTHON ?= python3
 PY_USER_BASE ?= $(shell $(PYTHON) -m site --user-base 2>/dev/null)
 DEFAULT_CMAKE_BIN_DIR := $(firstword $(wildcard $(HOME)/Library/Python/*/bin $(HOME)/.local/bin))
@@ -45,7 +47,10 @@ help:
 		'  make flash PORT=...  Flash the device' \
 		'  make monitor PORT=... Open serial monitor' \
 		'  make flash-monitor PORT=... Flash and then open monitor' \
-		'  make size            Show binary size report'
+		'  make size            Show binary size report' \
+		'' \
+		'Auto-detection:' \
+		'  Uses .env.mk first, then ./ .deps, then ~/esp/esp-idf and ~/esp/esp-matter if present.'
 
 dev-init:
 	@./scripts/dev-init.sh
