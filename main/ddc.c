@@ -8,6 +8,43 @@
 #include "esp_log.h"
 
 static const char *TAG = "ddc";
+static const uint8_t kStandardDdcDest = 0x51;
+static const uint8_t kAlternateDdcDest = 0x50;
+static const uint8_t kGetVcpResponseOpcode = 0x02;
+static const uint8_t kStandardInputVcp = 0x60;
+static const uint8_t kAlternateInputVcp = 0xF4;
+
+static esp_err_t ddc_set_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value);
+static esp_err_t ddc_get_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value);
+
+static bool parse_vcp_response(const uint8_t *response, size_t response_len, uint8_t vcp_code, ddc_vcp_value_t *value,
+                               bool *unsupported)
+{
+    for (size_t offset = 0; offset + 8 <= response_len; ++offset) {
+        if (response[offset] != kGetVcpResponseOpcode) {
+            continue;
+        }
+        if (response[offset + 2] != vcp_code) {
+            continue;
+        }
+
+        uint8_t result_code = response[offset + 1];
+        if (result_code == 0x01) {
+            *unsupported = true;
+            return true;
+        }
+        if (result_code != 0x00) {
+            continue;
+        }
+
+        value->present = true;
+        value->maximum_value = ((uint16_t)response[offset + 4] << 8) | response[offset + 5];
+        value->current_value = ((uint16_t)response[offset + 6] << 8) | response[offset + 7];
+        return true;
+    }
+
+    return false;
+}
 
 static uint8_t ddc_checksum(uint8_t addr, const uint8_t *payload, size_t len)
 {
@@ -54,8 +91,13 @@ esp_err_t ddc_read_edid(ddc_bus_t *bus, uint8_t *buffer, size_t len)
 
 esp_err_t ddc_set_vcp(ddc_bus_t *bus, uint8_t vcp_code, uint16_t value)
 {
+    return ddc_set_vcp_target(bus, kStandardDdcDest, vcp_code, value);
+}
+
+static esp_err_t ddc_set_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value)
+{
     uint8_t packet[7] = {
-        0x51,
+        ddc_dest,
         0x84,
         0x03,
         vcp_code,
@@ -69,17 +111,63 @@ esp_err_t ddc_set_vcp(ddc_bus_t *bus, uint8_t vcp_code, uint16_t value)
 
 esp_err_t ddc_get_vcp(ddc_bus_t *bus, uint8_t vcp_code, ddc_vcp_value_t *value)
 {
-    uint8_t request[5] = {0x51, 0x82, 0x01, vcp_code, 0x00};
+    return ddc_get_vcp_target(bus, kStandardDdcDest, vcp_code, value);
+}
+
+static esp_err_t ddc_get_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value)
+{
+    uint8_t request[5] = {ddc_dest, 0x82, 0x01, vcp_code, 0x00};
     uint8_t response[11] = {0};
+    bool unsupported = false;
+
+    memset(value, 0, sizeof(*value));
     request[4] = ddc_checksum((DDC_CI_ADDRESS << 1), request, sizeof(request) - 1);
 
     ESP_RETURN_ON_ERROR(i2c_master_transmit(bus->ddc_dev, request, sizeof(request), 1000), TAG, "get vcp tx failed");
     ESP_RETURN_ON_ERROR(i2c_master_receive(bus->ddc_dev, response, sizeof(response), 1000), TAG, "get vcp rx failed");
 
-    value->present = (response[2] == 0x02) && (response[4] == 0x00);
-    value->maximum_value = response[7];
-    value->current_value = response[9];
-    return value->present ? ESP_OK : ESP_FAIL;
+    ESP_LOGD(TAG,
+             "VCP 0x%02X raw response: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+             vcp_code, response[0], response[1], response[2], response[3], response[4], response[5], response[6],
+             response[7], response[8], response[9], response[10]);
+
+    if (parse_vcp_response(response, sizeof(response), vcp_code, value, &unsupported)) {
+        if (unsupported) {
+            ESP_LOGW(TAG, "VCP 0x%02X reported unsupported", vcp_code);
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "VCP 0x%02X reply did not contain a recognizable VCP response segment", vcp_code);
+    return ESP_FAIL;
+}
+
+esp_err_t ddc_set_input_source(ddc_bus_t *bus, uint8_t value)
+{
+    if (value >= 0x80) {
+        return ddc_set_vcp_target(bus, kAlternateDdcDest, kAlternateInputVcp, value);
+    }
+    return ddc_set_vcp_target(bus, kStandardDdcDest, kStandardInputVcp, value);
+}
+
+esp_err_t ddc_get_input_source_standard(ddc_bus_t *bus, ddc_vcp_value_t *value)
+{
+    return ddc_get_vcp_target(bus, kStandardDdcDest, kStandardInputVcp, value);
+}
+
+esp_err_t ddc_get_input_source_alternate(ddc_bus_t *bus, ddc_vcp_value_t *value)
+{
+    return ddc_get_vcp_target(bus, kAlternateDdcDest, kAlternateInputVcp, value);
+}
+
+esp_err_t ddc_get_input_source(ddc_bus_t *bus, ddc_vcp_value_t *value)
+{
+    esp_err_t err = ddc_get_input_source_standard(bus, value);
+    if (err == ESP_OK && value->present) {
+        return ESP_OK;
+    }
+    return ddc_get_input_source_alternate(bus, value);
 }
 
 esp_err_t ddc_query_capabilities(ddc_bus_t *bus, char *buffer, size_t len)

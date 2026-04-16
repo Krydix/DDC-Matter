@@ -96,6 +96,12 @@
       background: rgba(255,255,255,0.9);
       font: inherit;
     }
+    input[type="range"] {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      accent-color: var(--accent);
+    }
     button {
       appearance: none;
       border: 0;
@@ -110,12 +116,37 @@
     }
     button.secondary { background: var(--accent-2); }
     button:hover { transform: translateY(-1px); }
+    button:disabled {
+      opacity: 0.45;
+      cursor: default;
+      transform: none;
+    }
     .actions {
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
     }
-    .status { color: var(--muted); font-size: 0.95rem; }
+    .status {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .slider-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+    }
+    .slider-value {
+      min-width: 3ch;
+      text-align: right;
+      font-weight: 700;
+    }
+    .slider-meta {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.4;
+    }
     @media (max-width: 640px) {
       body { padding: 12px; }
       header, main { padding-left: 16px; padding-right: 16px; }
@@ -123,6 +154,8 @@
       th { padding-bottom: 4px; }
       td { padding-top: 4px; }
       tr { border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 12px; }
+      .slider-row { grid-template-columns: 1fr; }
+      .slider-value { text-align: left; }
     }
   </style>
 </head>
@@ -169,10 +202,38 @@
         </div>
       </section>
 
+      <section class="grid">
+        <div class="panel">
+          <div class="label">Brightness Test</div>
+          <div class="slider-row">
+            <input id="brightness-level" type="range" min="0" max="100" value="0" disabled>
+            <div class="slider-value" id="brightness-level-value">-</div>
+          </div>
+          <div class="slider-meta" id="brightness-level-meta">Waiting for monitor...</div>
+        </div>
+        <div class="panel">
+          <div class="label">Contrast Test</div>
+          <div class="slider-row">
+            <input id="contrast-level" type="range" min="0" max="100" value="0" disabled>
+            <div class="slider-value" id="contrast-level-value">-</div>
+          </div>
+          <div class="slider-meta" id="contrast-level-meta">Waiting for monitor...</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="label">Current Input Readback</div>
+        <div class="slider-meta" id="input-source-resolved">Waiting for monitor...</div>
+        <div class="slider-meta" id="input-source-standard">Standard 0x60: -</div>
+        <div class="slider-meta" id="input-source-alternate">Alternate 0xF4: -</div>
+        <div class="slider-meta">Use this to see what the monitor reports for the active input while you switch it manually.</div>
+      </section>
+
       <section class="actions">
         <button id="save-btn">Save To NVS</button>
-        <button class="secondary" id="detect-btn">Re-run Detect</button>
-        <button class="secondary" id="refresh-btn">Refresh From Database</button>
+        <button class="secondary" id="detect-btn">Reload Active Mapping</button>
+        <button class="secondary" id="refresh-btn">Probe Monitor Bus</button>
+        <button class="secondary" id="probe-inputs-btn">Auto-Probe Inputs</button>
       </section>
 
       <div class="status" id="status">Waiting for device...</div>
@@ -180,7 +241,26 @@
   </div>
 
   <script>
-    const state = { inputs: [] };
+    const state = { inputs: [], levels: {}, inputState: {}, pendingLevelValues: {} };
+
+    async function fetchJson(url, options) {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : {};
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      return data;
+    }
+
+    function currentLevelOverrides() {
+      return {
+        brightnessVcp: Number(document.getElementById("brightness-vcp").value),
+        contrastVcp: Number(document.getElementById("contrast-vcp").value)
+      };
+    }
 
     function setStatus(text) {
       document.getElementById("status").textContent = text;
@@ -190,7 +270,11 @@
       state.inputs = config.inputs || [];
       document.getElementById("monitor-name").textContent = config.monitorName || "Display";
       document.getElementById("pnp-id").textContent = config.pnpId || "-";
-      document.getElementById("db-status").textContent = config.dbMatch ? "Matched" : "Fallback";
+      document.getElementById("db-status").textContent = config.userOverride
+        ? "Saved Override"
+        : config.dbMatch
+          ? (config.profileCached ? "Cached DB" : "Remote DB")
+          : "On-Bus / Defaults";
       document.getElementById("brightness-vcp").value = config.brightnessVcp ?? 16;
       document.getElementById("contrast-vcp").value = config.contrastVcp ?? 18;
 
@@ -208,11 +292,98 @@
       });
     }
 
+    function updateSliderValue(kind) {
+      const slider = document.getElementById(`${kind}-level`);
+      const output = document.getElementById(`${kind}-level-value`);
+      output.textContent = slider.disabled ? "-" : slider.value;
+    }
+
+    function renderLevels(levels) {
+      const previousLevels = state.levels || {};
+      state.levels = levels || {};
+
+      ["brightness", "contrast"].forEach((kind) => {
+        const level = state.levels[kind] || {};
+        const previousLevel = previousLevels[kind] || {};
+        const slider = document.getElementById(`${kind}-level`);
+        const meta = document.getElementById(`${kind}-level-meta`);
+        const available = Boolean(level.present || level.writeOnly);
+        const maximum = Math.max(Number(level.maximum || 100), 1);
+        const pendingValue = state.pendingLevelValues[kind];
+        const previousSliderValue = Number(slider.value || 0);
+
+        let sliderValue = 0;
+        if (level.present) {
+          sliderValue = Number(level.current || 0);
+          delete state.pendingLevelValues[kind];
+        } else if (level.writeOnly) {
+          sliderValue = pendingValue ?? previousLevel.lastRequested ?? previousSliderValue;
+        }
+
+        slider.max = maximum;
+        slider.value = available ? Math.max(0, Math.min(sliderValue, maximum)) : 0;
+        slider.disabled = !available;
+        level.lastRequested = pendingValue ?? previousLevel.lastRequested;
+
+        if (level.present) {
+          meta.textContent = `VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} range 0-${maximum}, applies on release`;
+        } else if (level.writeOnly) {
+          meta.textContent = `VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} read unavailable, write-only test range 0-${maximum}, applies on release`;
+        } else {
+          meta.textContent = `VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} unavailable`;
+        }
+
+        updateSliderValue(kind);
+      });
+    }
+
+    function resolvedText(label, value) {
+      if (value && value.present) {
+        return `${label}: 0x${Number(value.current || 0).toString(16).padStart(2, "0")} (max ${Number(value.maximum || 0)})`;
+      }
+      return `${label}: unavailable`;
+    }
+
+    function renderInputSource(inputState) {
+      state.inputState = inputState || {};
+      const resolved = state.inputState.resolved || {};
+      const matchedSlot = Number(state.inputState.matchedSlot ?? -1);
+      const matchedName = state.inputState.matchedName || "";
+
+      document.getElementById("input-source-standard").textContent = resolvedText("Standard 0x60", state.inputState.standard);
+      document.getElementById("input-source-alternate").textContent = resolvedText("Alternate 0xF4", state.inputState.alternate);
+
+      if (resolved.present) {
+        const rawValue = `0x${Number(resolved.current || 0).toString(16).padStart(2, "0")}`;
+        document.getElementById("input-source-resolved").textContent = matchedSlot >= 0
+          ? `Resolved current input: ${rawValue} -> Input ${matchedSlot + 1} (${matchedName || "Unnamed"})`
+          : `Resolved current input: ${rawValue} (not matched to a configured slot)`;
+      } else {
+        document.getElementById("input-source-resolved").textContent = "Resolved current input: unavailable";
+      }
+    }
+
     async function loadConfig(url = "/api/config") {
-      const response = await fetch(url);
-      const data = await response.json();
+      const data = await fetchJson(url);
       render(data);
       setStatus(`Loaded ${data.monitorName || "display"} (${data.pnpId || "-"})`);
+    }
+
+    async function loadLevels() {
+      const params = new URLSearchParams(currentLevelOverrides());
+      const data = await fetchJson(`/api/levels?${params.toString()}`);
+      renderLevels(data);
+    }
+
+    async function loadInputSource() {
+      const data = await fetchJson("/api/input-source");
+      renderInputSource(data);
+    }
+
+    async function refreshPage(url = "/api/config") {
+      await loadConfig(url);
+      await loadLevels();
+      await loadInputSource();
     }
 
     async function saveConfig() {
@@ -220,44 +391,94 @@
         value: Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value),
         name: document.querySelector(`[data-kind="name"][data-index="${index}"]`).value
       }));
+
       const payload = {
         brightnessVcp: Number(document.getElementById("brightness-vcp").value),
         contrastVcp: Number(document.getElementById("contrast-vcp").value),
         inputs
       };
+
       setStatus("Saving...");
-      await fetch("/api/config", {
+      await fetchJson("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       setStatus("Saved to NVS");
-      await loadConfig();
+      await refreshPage();
     }
 
-    document.getElementById("save-btn").addEventListener("click", saveConfig);
-    document.getElementById("detect-btn").addEventListener("click", async () => {
-      setStatus("Detecting monitor capabilities...");
-      await loadConfig("/api/detect");
+    async function applyLevel(kind) {
+      const slider = document.getElementById(`${kind}-level`);
+      state.pendingLevelValues[kind] = Number(slider.value);
+      setStatus(`Applying ${kind} ${slider.value}`);
+
+      try {
+        const data = await fetchJson("/api/levels", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind, value: Number(slider.value), ...currentLevelOverrides() })
+        });
+
+        renderLevels(data);
+        setStatus(`${kind[0].toUpperCase()}${kind.slice(1)} command sent`);
+      } catch (error) {
+        delete state.pendingLevelValues[kind];
+        renderLevels(state.levels);
+        setStatus(`Failed to apply ${kind}: ${error.message}`);
+        throw error;
+      }
+    }
+
+    document.getElementById("save-btn").addEventListener("click", () => saveConfig().catch(console.error));
+    document.getElementById("detect-btn").addEventListener("click", () => {
+      setStatus("Reloading the active saved or detected mapping...");
+      return refreshPage("/api/detect").catch(console.error);
     });
-    document.getElementById("refresh-btn").addEventListener("click", async () => {
-      setStatus("Refreshing ddccontrol-db profile...");
-      await loadConfig("/api/detect?refresh_db=1");
+    document.getElementById("refresh-btn").addEventListener("click", () => {
+      setStatus("Probing the monitor bus and bypassing saved overrides...");
+      return refreshPage("/api/detect?refresh_db=1").catch(console.error);
     });
+    document.getElementById("probe-inputs-btn").addEventListener("click", async () => {
+      try {
+        setStatus("Probing known input codes; the monitor may switch a few times...");
+        await fetchJson("/api/probe-inputs", { method: "POST" });
+        await refreshPage();
+        setStatus("Input probe finished; review the mapping and save if it looks correct");
+      } catch (error) {
+        setStatus(`Input probe failed: ${error.message}`);
+        throw error;
+      }
+    });
+    document.getElementById("brightness-level").addEventListener("input", () => updateSliderValue("brightness"));
+    document.getElementById("contrast-level").addEventListener("input", () => updateSliderValue("contrast"));
+    document.getElementById("brightness-level").addEventListener("change", () => applyLevel("brightness").catch(console.error));
+    document.getElementById("contrast-level").addEventListener("change", () => applyLevel("contrast").catch(console.error));
+    document.getElementById("brightness-vcp").addEventListener("change", () => loadLevels().catch(console.error));
+    document.getElementById("contrast-vcp").addEventListener("change", () => loadLevels().catch(console.error));
     document.getElementById("inputs-body").addEventListener("click", async (event) => {
       const index = event.target.getAttribute("data-test");
-      if (index === null) return;
+      if (index === null) {
+        return;
+      }
+
       const value = Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value);
-      setStatus(`Testing input value 0x${value.toString(16).padStart(2, "0")}`);
-      await fetch("/api/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ value })
-      });
-      setStatus("Test command sent");
+      try {
+        setStatus(`Testing input value 0x${value.toString(16).padStart(2, "0")}`);
+        await fetchJson("/api/test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value })
+        });
+        await loadInputSource();
+        setStatus("Test command sent");
+      } catch (error) {
+        setStatus(`Input test failed: ${error.message}`);
+        throw error;
+      }
     });
 
-    loadConfig().catch((error) => {
+    refreshPage().catch((error) => {
       console.error(error);
       setStatus("Unable to load configuration");
     });

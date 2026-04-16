@@ -10,6 +10,18 @@ IDF_PATH="${IDF_PATH:-${DEPS_DIR}/esp-idf}"
 ESP_MATTER_PATH="${ESP_MATTER_PATH:-${DEPS_DIR}/esp-matter}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
+case "$(uname -s)" in
+    Darwin)
+        CHIP_HOST_PLATFORM="darwin"
+        ;;
+    Linux)
+        CHIP_HOST_PLATFORM="linux"
+        ;;
+    *)
+        fail "unsupported host OS: $(uname -s)"
+        ;;
+esac
+
 log() {
     printf '==> %s\n' "$*"
 }
@@ -72,6 +84,23 @@ clone_or_update_repo() {
     fi
 }
 
+bootstrap_esp_matter_checkout() {
+    local repo_dir="$1"
+    local matter_dir="${repo_dir}/connectedhomeip/connectedhomeip"
+
+    log "Initializing esp-matter submodules"
+    git -C "$repo_dir" submodule sync --recursive
+    git -C "$repo_dir" submodule update --init --depth 1
+
+    [[ -d "$matter_dir" ]] || fail "missing connectedhomeip checkout in ${matter_dir}"
+
+    log "Checking out connectedhomeip submodules for esp32/${CHIP_HOST_PLATFORM}"
+    (
+        cd "$matter_dir"
+        ./scripts/checkout_submodules.py --platform esp32 "$CHIP_HOST_PLATFORM" --shallow
+    )
+}
+
 need_cmd git
 need_cmd "$PYTHON_BIN"
 
@@ -90,7 +119,8 @@ fi
 mkdir -p "$DEPS_DIR"
 
 clone_or_update_repo "https://github.com/espressif/esp-idf.git" "$IDF_PATH" "$ESP_IDF_VERSION" 0
-clone_or_update_repo "https://github.com/espressif/esp-matter.git" "$ESP_MATTER_PATH" "$ESP_MATTER_VERSION" 1
+clone_or_update_repo "https://github.com/espressif/esp-matter.git" "$ESP_MATTER_PATH" "$ESP_MATTER_VERSION" 0
+bootstrap_esp_matter_checkout "$ESP_MATTER_PATH"
 
 log "Installing ESP-IDF toolchain for esp32"
 bash "$IDF_PATH/install.sh" esp32

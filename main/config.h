@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define INPUT_SLOT_COUNT 4
+#define INPUT_SLOT_COUNT 5
 #define MONITOR_NAME_MAX_LEN 32
 #define PNP_ID_LEN 4
 #define INPUT_NAME_MAX_LEN 24

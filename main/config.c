@@ -33,6 +33,11 @@ static esp_err_t read_blob(const char *key, void *value, size_t len, bool *found
 
     size_t required = len;
     err = nvs_get_blob(handle, key, value, &required);
+    if (err == ESP_ERR_NVS_INVALID_LENGTH) {
+        nvs_close(handle);
+        *found = false;
+        return ESP_OK;
+    }
     nvs_close(handle);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         *found = false;

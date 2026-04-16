@@ -21,8 +21,8 @@ typedef struct {
 } ddc_bus_t;
 
 typedef struct {
-    uint8_t current_value;
-    uint8_t maximum_value;
+    uint16_t current_value;
+    uint16_t maximum_value;
     bool present;
 } ddc_vcp_value_t;
 
@@ -30,6 +30,10 @@ esp_err_t ddc_init(ddc_bus_t *bus, int sda_gpio, int scl_gpio, uint32_t speed_hz
 esp_err_t ddc_read_edid(ddc_bus_t *bus, uint8_t *buffer, size_t len);
 esp_err_t ddc_set_vcp(ddc_bus_t *bus, uint8_t vcp_code, uint16_t value);
 esp_err_t ddc_get_vcp(ddc_bus_t *bus, uint8_t vcp_code, ddc_vcp_value_t *value);
+esp_err_t ddc_set_input_source(ddc_bus_t *bus, uint8_t value);
+esp_err_t ddc_get_input_source_standard(ddc_bus_t *bus, ddc_vcp_value_t *value);
+esp_err_t ddc_get_input_source_alternate(ddc_bus_t *bus, ddc_vcp_value_t *value);
+esp_err_t ddc_get_input_source(ddc_bus_t *bus, ddc_vcp_value_t *value);
 esp_err_t ddc_query_capabilities(ddc_bus_t *bus, char *buffer, size_t len);
 size_t ddc_extract_vcp_values(const char *caps, uint8_t feature_code, uint8_t *values, size_t max_values);
 
