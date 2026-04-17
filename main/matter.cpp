@@ -8,6 +8,7 @@
 #include <app-common/zap-generated/ids/Clusters.h>
 #include <app/server/Server.h>
 #include <app/clusters/mode-select-server/supported-modes-manager.h>
+#include <platform/PlatformManager.h>
 #include <platform/CHIPDeviceEvent.h>
 #include <platform/DeviceInfoProvider.h>
 #include <esp_matter.h>
@@ -15,6 +16,9 @@
 #include <esp_matter_cluster.h>
 #include <esp_matter_endpoint.h>
 #include <esp_matter_providers.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -28,6 +32,33 @@ static constexpr char kLabelKey[] = "name";
 static constexpr char kBrightnessName[] = "Brightness";
 static constexpr char kContrastName[] = "Contrast";
 static constexpr char kInputName[] = "Input Source";
+static constexpr uint32_t kCommissioningWindowTimeoutSecs = 15 * 60;
+
+static uint8_t ddc_level_to_matter_level(uint8_t ddc_level)
+{
+    uint8_t clamped = std::min<uint8_t>(ddc_level, 100);
+    return static_cast<uint8_t>((static_cast<uint16_t>(clamped) * 254U + 50U) / 100U);
+}
+
+struct CommissioningWindowRequest {
+    TaskHandle_t waiting_task;
+    esp_err_t result;
+};
+
+static void open_commissioning_window_work(intptr_t arg)
+{
+    auto *request = reinterpret_cast<CommissioningWindowRequest *>(arg);
+    CHIP_ERROR err = chip::Server::GetInstance().GetCommissioningWindowManager().OpenBasicCommissioningWindow(
+        chip::System::Clock::Seconds32(kCommissioningWindowTimeoutSecs));
+    request->result = (err == CHIP_NO_ERROR) ? ESP_OK : ESP_FAIL;
+    if (request->result == ESP_OK) {
+        ESP_LOGI(TAG, "basic commissioning window opened for %lu seconds",
+                 static_cast<unsigned long>(kCommissioningWindowTimeoutSecs));
+    } else {
+        ESP_LOGW(TAG, "failed to open basic commissioning window");
+    }
+    xTaskNotifyGive(request->waiting_task);
+}
 
 class InputModesManager : public chip::app::Clusters::ModeSelect::SupportedModesManager {
 public:
@@ -450,7 +481,7 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
 extern "C" esp_err_t matter_update_level(uint16_t endpoint_id, uint8_t level)
 {
     InternalAttributeUpdateGuard guard;
-    esp_matter_attr_val_t val = esp_matter_uint8(level);
+    esp_matter_attr_val_t val = esp_matter_uint8(ddc_level_to_matter_level(level));
     return attribute::update(endpoint_id, LevelControl::Id, LevelControl::Attributes::CurrentLevel::Id, &val);
 }
 
@@ -465,6 +496,28 @@ extern "C" esp_err_t matter_update_supported_modes(const display_config_t *confi
 {
     g_input_modes_manager.Update(endpoint_id, config);
     return ESP_OK;
+}
+
+extern "C" esp_err_t matter_open_basic_commissioning_window(void)
+{
+    CommissioningWindowRequest request = {
+        .waiting_task = xTaskGetCurrentTaskHandle(),
+        .result = ESP_FAIL,
+    };
+
+    CHIP_ERROR err = chip::DeviceLayer::PlatformMgr().ScheduleWork(open_commissioning_window_work,
+                                                                   reinterpret_cast<intptr_t>(&request));
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGW(TAG, "failed to schedule commissioning window work");
+        return ESP_FAIL;
+    }
+
+    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) == 0) {
+        ESP_LOGW(TAG, "timed out waiting for commissioning window work");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    return request.result;
 }
 
 extern "C" bool matter_is_commissioned(void)

@@ -356,6 +356,22 @@ static esp_err_t detect_handler(httpd_req_t *req)
     return get_config_handler(req);
 }
 
+static esp_err_t open_commissioning_window_handler(httpd_req_t *req)
+{
+    esp_err_t err = s_ctx->open_commissioning_window ? s_ctx->open_commissioning_window(s_ctx->ctx) : ESP_ERR_NOT_SUPPORTED;
+    if (err == ESP_ERR_TIMEOUT) {
+        return send_error(req, "504 Gateway Timeout",
+                          "{\"ok\":false,\"error\":\"commissioning window request timed out\"}");
+    }
+    if (err != ESP_OK) {
+        return send_error(req, "500 Internal Server Error",
+                          "{\"ok\":false,\"error\":\"commissioning window failed\"}");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"timeoutSeconds\":900}");
+}
+
 esp_err_t webserver_start(webserver_context_t *ctx)
 {
     s_ctx = ctx;
@@ -363,6 +379,7 @@ esp_err_t webserver_start(webserver_context_t *ctx)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = HTTPD_STACK_SIZE;
+    config.max_uri_handlers = 10;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &config), TAG, "httpd start failed");
 
     httpd_uri_t index = {.uri = "/", .method = HTTP_GET, .handler = index_handler};
@@ -374,6 +391,11 @@ esp_err_t webserver_start(webserver_context_t *ctx)
     httpd_uri_t probe_inputs = {.uri = "/api/probe-inputs", .method = HTTP_POST, .handler = probe_inputs_handler};
     httpd_uri_t set_level = {.uri = "/api/levels", .method = HTTP_POST, .handler = set_level_handler};
     httpd_uri_t detect = {.uri = "/api/detect", .method = HTTP_GET, .handler = detect_handler};
+    httpd_uri_t open_commissioning_window = {
+        .uri = "/api/matter/open-commissioning-window",
+        .method = HTTP_POST,
+        .handler = open_commissioning_window_handler,
+    };
 
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &index), TAG, "index register failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &get_config), TAG, "config get register failed");
@@ -384,6 +406,8 @@ esp_err_t webserver_start(webserver_context_t *ctx)
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &probe_inputs), TAG, "probe register failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &set_level), TAG, "levels post register failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &detect), TAG, "detect register failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &open_commissioning_window), TAG,
+                        "commissioning window register failed");
     ESP_LOGI(TAG, "web ui HTTP server started on port 80");
     return ESP_OK;
 }

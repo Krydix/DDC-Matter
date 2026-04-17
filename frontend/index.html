@@ -229,6 +229,15 @@
         <div class="slider-meta">Use this to see what the monitor reports for the active input while you switch it manually.</div>
       </section>
 
+      <section class="panel">
+        <div class="label">Matter Pairing</div>
+        <div class="slider-meta">If this device is already on another Matter fabric, open a temporary commissioning window here before trying to add it in Apple Home.</div>
+        <div class="slider-meta">Use the same Matter setup code or QR payload after the window opens.</div>
+        <div class="actions">
+          <button class="secondary" id="commissioning-window-btn">Open Commissioning Window</button>
+        </div>
+      </section>
+
       <section class="actions">
         <button id="save-btn">Save To NVS</button>
         <button class="secondary" id="detect-btn">Reload Active Mapping</button>
@@ -447,6 +456,16 @@
         setStatus("Input probe finished; review the mapping and save if it looks correct");
       } catch (error) {
         setStatus(`Input probe failed: ${error.message}`);
+        throw error;
+      }
+    });
+    document.getElementById("commissioning-window-btn").addEventListener("click", async () => {
+      try {
+        setStatus("Opening a Matter commissioning window...");
+        const data = await fetchJson("/api/matter/open-commissioning-window", { method: "POST" });
+        setStatus(`Matter commissioning window open for ${Number(data.timeoutSeconds || 0)} seconds; add it in Apple Home with the existing setup code`);
+      } catch (error) {
+        setStatus(`Failed to open Matter commissioning window: ${error.message}`);
         throw error;
       }
     });

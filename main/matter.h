@@ -33,6 +33,7 @@ esp_err_t matter_start(const display_config_t *config, matter_runtime_t *runtime
 esp_err_t matter_update_level(uint16_t endpoint_id, uint8_t level);
 esp_err_t matter_update_mode(uint16_t endpoint_id, uint8_t mode);
 esp_err_t matter_update_supported_modes(const display_config_t *config, uint16_t endpoint_id);
+esp_err_t matter_open_basic_commissioning_window(void);
 bool matter_is_commissioned(void);
 
 #ifdef __cplusplus

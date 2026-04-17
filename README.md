@@ -126,6 +126,7 @@ After commissioning completes, the firmware starts the web UI HTTP server on por
 - Brightness/contrast VCP code overrides
 - **Refresh from database** — re-runs the remote fetch
 - **Auto-Probe Inputs** — cycles known standard and LG-specific input codes, keeps the values that actually read back, and restores the original input
+- **Open Commissioning Window** — re-enables Matter commissioning for multi-admin pairing from Apple Home or another controller after the device is already commissioned
 - **Save to NVS** — persists the current config as the user override
 
 REST API:
@@ -140,6 +141,7 @@ REST API:
 | `POST` | `/api/test` | Send a one-shot DDC write to test an input value |
 | `POST` | `/api/probe-inputs` | Probe known input values using input readback and update the in-memory mapping |
 | `GET` | `/api/detect` | Re-run the full detection chain |
+| `POST` | `/api/matter/open-commissioning-window` | Re-open a temporary Matter commissioning window for Apple Home or another controller |
 
 There is no separate `.local` hostname for the web UI anymore. The previous `display-switcher.local` mDNS advertisement was removed so the web UI does not interfere with Matter commissioning.
 
@@ -150,6 +152,8 @@ The firmware uses Matter's normal discovery transports:
 - BLE advertisement during the initial commissioning flow
 - `_matterc._udp` DNS-SD advertisement while the device is commissionable on the local network
 - `_matter._tcp` DNS-SD advertisement after the device has been commissioned onto a fabric
+
+Once the device is already commissioned, it will not appear as a fresh accessory in Apple Home until a new commissioning window is opened. The web UI exposes an action for that multi-admin flow.
 
 The config UI is not published as its own mDNS HTTP service. Use the device IP address for the web UI.
 

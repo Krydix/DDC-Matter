@@ -33,6 +33,14 @@ typedef struct {
 
 static void sync_runtime_state(app_context_t *app);
 
+static uint8_t matter_level_to_ddc_value(uint8_t matter_level)
+{
+    if (matter_level >= 254) {
+        return 100;
+    }
+    return static_cast<uint8_t>((static_cast<uint16_t>(matter_level) * 100U + 127U) / 254U);
+}
+
 static void copy_inputs_from_slots(display_config_t *config, const input_slot_t *slots)
 {
     for (size_t i = 0; i < INPUT_SLOT_COUNT; ++i) {
@@ -259,8 +267,11 @@ static esp_err_t matter_level_write(uint16_t endpoint_id, uint8_t level, void *c
         ESP_LOGW(TAG, "ignoring Matter level write while monitor is unavailable");
         return ESP_OK;
     }
+
+    uint8_t ddc_value = matter_level_to_ddc_value(level);
     uint8_t vcp = (endpoint_id == app->matter.contrast_endpoint_id) ? app->config.contrast_vcp : app->config.brightness_vcp;
-    return ddc_set_vcp(&app->ddc, vcp, level);
+    ESP_LOGI(TAG, "Matter level write endpoint=%u level=%u mapped_ddc=%u vcp=0x%02X", endpoint_id, level, ddc_value, vcp);
+    return ddc_set_vcp(&app->ddc, vcp, ddc_value);
 }
 
 static esp_err_t matter_mode_write(uint8_t mode, void *ctx)
@@ -387,6 +398,12 @@ static esp_err_t set_level_cb(bool contrast, uint8_t vcp, uint8_t value, void *c
     return ESP_OK;
 }
 
+static esp_err_t open_commissioning_window_cb(void *ctx)
+{
+    (void)ctx;
+    return matter_open_basic_commissioning_window();
+}
+
 static esp_err_t get_input_source_state_cb(web_input_source_state_t *state, void *ctx)
 {
     return get_input_source_state(static_cast<app_context_t *>(ctx), state);
@@ -491,10 +508,12 @@ extern "C" void app_main(void)
     app.web.probe_inputs = probe_inputs_cb;
     app.web.get_level = get_level_cb;
     app.web.set_level = set_level_cb;
+    app.web.open_commissioning_window = open_commissioning_window_cb;
     app.web.get_input_source_state = get_input_source_state_cb;
     app.web.ctx = &app;
 
     if (matter_is_commissioned()) {
+        ESP_LOGI(TAG, "device already commissioned; open a new commissioning window from the web UI to add another controller");
         ESP_ERROR_CHECK(schedule_post_commissioning(&app));
     }
 }

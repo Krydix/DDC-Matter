@@ -17,6 +17,7 @@ typedef esp_err_t (*web_refresh_db_cb_t)(void *ctx);
 typedef esp_err_t (*web_probe_inputs_cb_t)(void *ctx);
 typedef esp_err_t (*web_get_level_cb_t)(bool contrast, uint8_t vcp, ddc_vcp_value_t *value, void *ctx);
 typedef esp_err_t (*web_set_level_cb_t)(bool contrast, uint8_t vcp, uint8_t value, void *ctx);
+typedef esp_err_t (*web_open_commissioning_window_cb_t)(void *ctx);
 
 typedef struct {
     ddc_vcp_value_t standard;
@@ -38,6 +39,7 @@ typedef struct {
     web_probe_inputs_cb_t probe_inputs;
     web_get_level_cb_t get_level;
     web_set_level_cb_t set_level;
+    web_open_commissioning_window_cb_t open_commissioning_window;
     web_get_input_source_state_cb_t get_input_source_state;
     void *ctx;
 } webserver_context_t;
