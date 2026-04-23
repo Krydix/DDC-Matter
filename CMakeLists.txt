@@ -27,6 +27,21 @@ set(EXTRA_COMPONENT_DIRS
 
 project(ddc_matter_display_controller)
 
+# Older esp-matter / CHIP ESP32 headers use #if on Bluetooth Kconfig symbols.
+# Add fallback values only for the CHIP component so -Wundef does not break
+# those third-party sources while leaving ESP-IDF's own #ifdef checks intact.
+idf_component_get_property(chip_component_lib chip COMPONENT_LIB)
+
+if(chip_component_lib)
+    if(NOT CONFIG_BT_NIMBLE_ENABLED)
+        target_compile_definitions(${chip_component_lib} PRIVATE CONFIG_BT_NIMBLE_ENABLED=0)
+    endif()
+
+    if(NOT CONFIG_BT_BLUEDROID_ENABLED)
+        target_compile_definitions(${chip_component_lib} PRIVATE CONFIG_BT_BLUEDROID_ENABLED=0)
+    endif()
+endif()
+
 idf_build_set_property(CXX_COMPILE_OPTIONS "-std=gnu++17;-Os;-DCHIP_HAVE_CONFIG_H;-Wno-overloaded-virtual;-Wno-error=unused-result" APPEND)
 idf_build_set_property(C_COMPILE_OPTIONS "-Os;-Wno-error=unused-result" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-format-nonliteral;-Wno-format-security" APPEND)

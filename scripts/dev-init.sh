@@ -9,6 +9,7 @@ ESP_MATTER_VERSION="${ESP_MATTER_VERSION:-release/v1.4.2}"
 IDF_PATH="${IDF_PATH:-${DEPS_DIR}/esp-idf}"
 ESP_MATTER_PATH="${ESP_MATTER_PATH:-${DEPS_DIR}/esp-matter}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+PYTHON_VERSION="$($PYTHON_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 
 case "$(uname -s)" in
     Darwin)
@@ -130,7 +131,10 @@ bash "$ESP_MATTER_PATH/install.sh" --no-host-tool
 
 IDF_SERIES="${ESP_IDF_VERSION#v}"
 IDF_SERIES="${IDF_SERIES%.*}"
-IDF_PYTHON_ENV_PATH="${IDF_PYTHON_ENV_PATH:-$(find "$HOME/.espressif/python_env" -maxdepth 1 -type d -name "idf${IDF_SERIES}*_env" | sort | tail -n 1)}"
+IDF_PYTHON_ENV_PATH="${IDF_PYTHON_ENV_PATH:-$(find "$HOME/.espressif/python_env" -maxdepth 1 -type d -name "idf${IDF_SERIES}_py${PYTHON_VERSION}_env" | sort | tail -n 1)}"
+if [[ -z "$IDF_PYTHON_ENV_PATH" ]]; then
+    IDF_PYTHON_ENV_PATH="$(find "$HOME/.espressif/python_env" -maxdepth 1 -type d -name "idf${IDF_SERIES}*_env" | sort | tail -n 1)"
+fi
 [[ -n "$IDF_PYTHON_ENV_PATH" ]] || fail "unable to locate ESP-IDF python environment"
 
 ENV_FILE="$ROOT_DIR/.env.mk"

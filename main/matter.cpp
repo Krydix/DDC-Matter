@@ -274,6 +274,8 @@ static std::array<std::array<char, INPUT_NAME_MAX_LEN>, INPUT_SLOT_COUNT> g_defa
 static DeviceInfoProviderImpl g_device_info_provider;
 static std::array<FixedLabelEntry, kManagedEndpointCount> g_fixed_labels = {};
 static std::array<std::array<char, INPUT_NAME_MAX_LEN>, kManagedEndpointCount> g_fixed_label_values = {};
+static node_t *g_node = nullptr;
+static std::array<endpoint::on_off_light::config_t, INPUT_SLOT_COUNT> g_input_endpoint_configs = {};
 static std::array<endpoint_t *, INPUT_SLOT_COUNT> g_input_endpoints = {};
 
 static bool is_input_endpoint(uint16_t endpoint_id)
@@ -303,6 +305,39 @@ static esp_err_t add_label_clusters(endpoint_t *endpoint)
     return ESP_OK;
 }
 
+static esp_err_t resume_input_endpoint(size_t index, uint16_t endpoint_id)
+{
+    VerifyOrReturnValue(g_node != nullptr, ESP_ERR_INVALID_STATE, ESP_LOGE(TAG, "matter node unavailable"));
+
+    endpoint_t *endpoint = endpoint::resume(g_node, ENDPOINT_FLAG_DESTROYABLE, endpoint_id, nullptr);
+    VerifyOrReturnValue(endpoint != nullptr, ESP_FAIL,
+                        ESP_LOGE(TAG, "Failed to resume input endpoint %u", static_cast<unsigned int>(index)));
+    VerifyOrReturnValue(cluster::descriptor::create(endpoint, &(g_input_endpoint_configs[index].descriptor),
+                                                    CLUSTER_FLAG_SERVER) != nullptr,
+                        ESP_FAIL,
+                        ESP_LOGE(TAG, "Failed to restore descriptor cluster for input endpoint %u",
+                                 static_cast<unsigned int>(index)));
+    ESP_RETURN_ON_ERROR(endpoint::on_off_light::add(endpoint, &(g_input_endpoint_configs[index])), TAG,
+                        "input endpoint cluster add failed");
+    ESP_RETURN_ON_ERROR(add_label_clusters(endpoint), TAG, "input label clusters failed");
+    ESP_RETURN_ON_ERROR(endpoint::enable(endpoint), TAG, "input endpoint enable failed");
+
+    g_input_endpoints[index] = endpoint;
+    return ESP_OK;
+}
+
+static esp_err_t destroy_input_endpoint(size_t index)
+{
+    if (g_input_endpoints[index] == nullptr) {
+        return ESP_OK;
+    }
+
+    VerifyOrReturnValue(g_node != nullptr, ESP_ERR_INVALID_STATE, ESP_LOGE(TAG, "matter node unavailable"));
+    ESP_RETURN_ON_ERROR(endpoint::destroy(g_node, g_input_endpoints[index]), TAG, "input endpoint destroy failed");
+    g_input_endpoints[index] = nullptr;
+    return ESP_OK;
+}
+
 static void set_fixed_label(size_t index, uint16_t endpoint_id, const char *value)
 {
     std::snprintf(g_fixed_label_values[index].data(), g_fixed_label_values[index].size(), "%s", value);
@@ -317,11 +352,18 @@ static esp_err_t seed_user_label(uint16_t endpoint_id, const char *value)
     VerifyOrReturnValue(provider != nullptr, ESP_FAIL, ESP_LOGE(TAG, "DeviceInfoProvider is not available"));
 
     chip::DeviceLayer::DeviceInfoProvider::UserLabelType user_label = {};
+    chip::DeviceLayer::AttributeList<chip::DeviceLayer::DeviceInfoProvider::UserLabelType,
+                                     chip::DeviceLayer::kMaxUserLabelListLength>
+        user_labels = {};
     user_label.label = chip::CharSpan::fromCharString(kLabelKey);
     user_label.value = chip::CharSpan::fromCharString(value);
 
-    CHIP_ERROR err = provider->SetUserLabelList(
-        endpoint_id, chip::Span<const chip::DeviceLayer::DeviceInfoProvider::UserLabelType>(&user_label, 1));
+    CHIP_ERROR err = user_labels.add(user_label);
+    VerifyOrReturnValue(err == CHIP_NO_ERROR, ESP_FAIL,
+                        ESP_LOGE(TAG, "Failed to prepare User Label for endpoint %u: %" CHIP_ERROR_FORMAT, endpoint_id,
+                                 err.Format()));
+
+    err = provider->SetUserLabelList(endpoint_id, user_labels);
     VerifyOrReturnValue(err == CHIP_NO_ERROR, ESP_FAIL,
                         ESP_LOGE(TAG, "Failed to seed User Label for endpoint %u: %" CHIP_ERROR_FORMAT, endpoint_id,
                                  err.Format()));
@@ -456,6 +498,7 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
         return ESP_FAIL;
     }
 
+    g_node = node;
     g_callbacks = *callbacks;
     g_runtime = runtime;
     std::strncpy(g_runtime->device_name, config->monitor_name, sizeof(g_runtime->device_name) - 1);
@@ -479,9 +522,10 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
     ESP_RETURN_ON_ERROR(add_label_clusters(contrast), TAG, "contrast label clusters failed");
 
     for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
-        endpoint::on_off_light::config_t input_cfg;
-        input_cfg.on_off.on_off = false;
-        endpoint_t *input = endpoint::on_off_light::create(node, &input_cfg, ENDPOINT_FLAG_NONE, nullptr);
+        g_input_endpoint_configs[index] = {};
+        g_input_endpoint_configs[index].on_off.on_off = false;
+        endpoint_t *input = endpoint::on_off_light::create(node, &g_input_endpoint_configs[index], ENDPOINT_FLAG_DESTROYABLE,
+                                                           nullptr);
         VerifyOrReturnValue(input != nullptr, ESP_FAIL, ESP_LOGE(TAG, "Failed to create input endpoint %u",
                                                                  static_cast<unsigned int>(index)));
         ESP_RETURN_ON_ERROR(add_label_clusters(input), TAG, "input label clusters failed");
@@ -533,12 +577,17 @@ extern "C" esp_err_t matter_sync_input_endpoints(const display_config_t *config)
 
         set_fixed_label(2 + index, endpoint_id, label);
         ESP_RETURN_ON_ERROR(seed_user_label(endpoint_id, label), TAG, "input user label seed failed");
-        ESP_RETURN_ON_ERROR(matter_update_input_state(endpoint_id, false), TAG, "input state reset failed");
 
         if (config->inputs[index].enabled) {
-            ESP_RETURN_ON_ERROR(endpoint::enable(g_input_endpoints[index]), TAG, "input endpoint enable failed");
+            if (g_input_endpoints[index] == nullptr) {
+                ESP_RETURN_ON_ERROR(resume_input_endpoint(index, endpoint_id), TAG, "input endpoint resume failed");
+            }
+            ESP_RETURN_ON_ERROR(matter_update_input_state(endpoint_id, false), TAG, "input state reset failed");
         } else {
-            ESP_RETURN_ON_ERROR(endpoint::disable(g_input_endpoints[index]), TAG, "input endpoint disable failed");
+            if (g_input_endpoints[index] != nullptr) {
+                ESP_RETURN_ON_ERROR(matter_update_input_state(endpoint_id, false), TAG, "input state reset failed");
+                ESP_RETURN_ON_ERROR(destroy_input_endpoint(index), TAG, "input endpoint disable failed");
+            }
         }
     }
 

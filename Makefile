@@ -245,7 +245,7 @@ define run_esptool_merge
 		echo "Wrote $(MERGED_BIN)"'
 endef
 
-.PHONY: help dev-init build build-debug merged-bin reconfigure clean clean-debug fullclean fullclean-debug flash flash-safe flash-manual flash-manual-run flash-debug flash-safe-debug erase-flash erase-nvs fresh-flash probe probe-manual monitor monitor-idf flash-monitor flash-monitor-idf flash-monitor-debug size detect-port web-installer
+.PHONY: help dev-init build build-debug merged-bin reconfigure clean clean-debug fullclean fullclean-debug flash flash-safe flash-manual flash-manual-run flash-debug flash-safe-debug erase-flash erase-nvs fresh-flash probe probe-manual monitor monitor-idf flash-monitor flash-monitor-idf flash-monitor-debug size detect-port web-installer ci-pages
 
 help:
 	@printf '%s\n' \
@@ -277,6 +277,7 @@ help:
 		'  make detect-port     Print the auto-detected serial port' \
 		'  make size            Show binary size report' \
 		'  make web-installer   Stage the GitHub Pages web flasher locally' \
+		'  make ci-pages        Simulate the GitHub Pages workflow in .ci-pages/' \
 		'' \
 		'Auto-detection:' \
 		'  Uses .env.mk first, then ./ .deps, then ~/esp/esp-idf and ~/esp/esp-matter if present.' \
@@ -398,3 +399,6 @@ size:
 
 web-installer:
 	@./scripts/stage-web-installer.sh "$(WEB_INSTALLER_DIR)"
+
+ci-pages:
+	@./scripts/run-pages-workflow-local.sh
