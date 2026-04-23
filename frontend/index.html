@@ -396,7 +396,7 @@
       await loadInputSource();
     }
 
-    async function saveConfig() {
+    async function saveConfig(statusText = "Saved to NVS") {
       const inputs = state.inputs.map((input, index) => ({
         enabled: document.querySelector(`[data-kind="enabled"][data-index="${index}"]`).checked,
         value: Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value),
@@ -415,7 +415,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      setStatus("Saved to NVS");
+      setStatus(statusText);
       await refreshPage();
     }
 
@@ -475,8 +475,33 @@
     document.getElementById("contrast-level").addEventListener("input", () => updateSliderValue("contrast"));
     document.getElementById("brightness-level").addEventListener("change", () => applyLevel("brightness").catch(console.error));
     document.getElementById("contrast-level").addEventListener("change", () => applyLevel("contrast").catch(console.error));
-    document.getElementById("brightness-vcp").addEventListener("change", () => loadLevels().catch(console.error));
-    document.getElementById("contrast-vcp").addEventListener("change", () => loadLevels().catch(console.error));
+    document.getElementById("brightness-vcp").addEventListener("change", async () => {
+      try {
+        await saveConfig("Saved brightness VCP to NVS");
+        await loadLevels();
+      } catch (error) {
+        console.error(error);
+      }
+    });
+    document.getElementById("contrast-vcp").addEventListener("change", async () => {
+      try {
+        await saveConfig("Saved contrast VCP to NVS");
+        await loadLevels();
+      } catch (error) {
+        console.error(error);
+      }
+    });
+    document.getElementById("inputs-body").addEventListener("change", async (event) => {
+      if (!event.target.matches("[data-kind]")) {
+        return;
+      }
+
+      try {
+        await saveConfig("Saved input mapping to NVS");
+      } catch (error) {
+        console.error(error);
+      }
+    });
     document.getElementById("inputs-body").addEventListener("click", async (event) => {
       const index = event.target.getAttribute("data-test");
       if (index === null) {

@@ -24,6 +24,10 @@ FLASH_AFTER ?= hard_reset
 BUILD_DIR ?= $(ROOT_DIR)/build
 DEBUG_BUILD_DIR ?= $(ROOT_DIR)/build-debug
 DEBUG_BUILD_FLAG := -D DDC_STANDALONE_DEBUG=ON
+DEFAULT_NVS_OFFSET := $(shell awk -F, '$$1=="nvs"{gsub(/[[:space:]]/, "", $$4); print $$4}' "$(ROOT_DIR)/partitions.csv")
+DEFAULT_NVS_SIZE := $(shell awk -F, '$$1=="nvs"{gsub(/[[:space:]]/, "", $$5); print $$5}' "$(ROOT_DIR)/partitions.csv")
+NVS_OFFSET ?= $(if $(DEFAULT_NVS_OFFSET),$(DEFAULT_NVS_OFFSET),0x9000)
+NVS_SIZE ?= $(if $(DEFAULT_NVS_SIZE),$(DEFAULT_NVS_SIZE),0x6000)
 
 .DEFAULT_GOAL := help
 
@@ -241,7 +245,7 @@ define run_esptool_merge
 		echo "Wrote $(MERGED_BIN)"'
 endef
 
-.PHONY: help dev-init build build-debug merged-bin reconfigure clean clean-debug fullclean fullclean-debug flash flash-safe flash-manual flash-manual-run flash-debug flash-safe-debug probe probe-manual monitor monitor-idf flash-monitor flash-monitor-idf flash-monitor-debug size detect-port web-installer
+.PHONY: help dev-init build build-debug merged-bin reconfigure clean clean-debug fullclean fullclean-debug flash flash-safe flash-manual flash-manual-run flash-debug flash-safe-debug erase-flash erase-nvs fresh-flash probe probe-manual monitor monitor-idf flash-monitor flash-monitor-idf flash-monitor-debug size detect-port web-installer
 
 help:
 	@printf '%s\n' \
@@ -260,6 +264,9 @@ help:
 		'  make flash-safe-debug Flash the debug image at 115200 baud' \
 		'  make flash-safe      Flash at 115200 baud to reduce link/reset issues' \
 		'  make flash-manual    Flash without auto-reset; put the ESP32 in bootloader mode first' \
+		'  make erase-flash     Erase the entire ESP32 flash chip (Wi-Fi, Matter, app config, firmware)' \
+		'  make erase-nvs       Erase only the NVS partition (Wi-Fi, Matter, app config)' \
+		'  make fresh-flash     Erase the entire chip and flash the current firmware again' \
 		'  make probe           Read chip info over serial using esptool' \
 		'  make probe-manual    Probe chip info after manually entering bootloader mode' \
 		'  make monitor PORT=... Open serial monitor (Ctrl+C exits)' \
@@ -329,6 +336,16 @@ flash-manual:
 
 flash-manual-run:
 	$(call run_esptool_flash)
+
+erase-flash:
+	$(call run_esptool_command,erase_flash)
+
+erase-nvs:
+	$(call run_esptool_command,erase_region $(NVS_OFFSET) $(NVS_SIZE))
+
+fresh-flash:
+	$(MAKE) erase-flash PORT=$(PORT) FLASH_BAUD=$(FLASH_BAUD) FLASH_BEFORE=$(FLASH_BEFORE) FLASH_AFTER=$(FLASH_AFTER)
+	$(MAKE) flash PORT=$(PORT) FLASH_BAUD=$(FLASH_BAUD) FLASH_BEFORE=$(FLASH_BEFORE) FLASH_AFTER=$(FLASH_AFTER)
 
 probe:
 	$(call run_esptool_command,chip_id)

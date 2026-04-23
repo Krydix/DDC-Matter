@@ -20,6 +20,10 @@ It uses **DDC/CI over I²C** to read the monitor's EDID, query and set VCP codes
 
 ---
 
+## Pairing Code
+
+![Pairing Code](https://docs.espressif.com/projects/esp-matter/en/latest/esp32/_images/matter_qrcode_20202021_3840.png)
+
 ## LG-Specific Behavior
 
 Some LG displays expose standard MCCS input feature `0x60` in their capabilities string but do not return a usable current input through that register. The firmware now handles that case more defensively:
@@ -172,6 +176,20 @@ The firmware uses Matter's normal discovery transports:
 
 Once the device is already commissioned, it will not appear as a fresh accessory in Apple Home until a new commissioning window is opened. The web UI exposes an action for that multi-admin flow.
 
+## Metadata And Naming
+
+The firmware currently sets the root Matter Basic Information metadata to `Display-Switcher` in code:
+
+- `NodeLabel`
+- `ProductName`
+- `ProductLabel`
+
+It also exposes endpoint labels through Matter `Fixed Label` and `User Label` clusters for brightness, contrast, and the configured input endpoints.
+
+This metadata is valid Matter-side labeling, but commissioners are free to ignore it in their UI. In particular, Apple Home may still show generic names such as `Matter Accessory`, `Light`, or `Light 2` even when these attributes are set correctly.
+
+If later you move to factory-generated Matter data for production, `product-name`, `product-label`, and related device instance fields can also be set via `esp-matter-mfg-tool`. That may help commissioners that read factory metadata, but it still does not guarantee Apple Home will use those values as the displayed accessory or endpoint names.
+
 ---
 
 ## Project Structure
@@ -269,6 +287,9 @@ Available build targets:
 - `make flash`
 - `make flash-safe`
 - `make flash-manual`
+- `make erase-flash`
+- `make erase-nvs`
+- `make fresh-flash`
 - `make monitor`
 - `make monitor-idf`
 - `make flash-monitor`
@@ -276,6 +297,12 @@ Available build targets:
 - `make web-installer`
 
 `make flash`, `make flash-safe`, `make flash-manual`, `make monitor`, `make monitor-idf`, `make flash-monitor`, and `make flash-monitor-idf` auto-detect a serial port on macOS and Linux. If more than one candidate is present, set `PORT=/dev/...` explicitly.
+
+If you want to test the device like a fresh ESP32, use one of these reset targets:
+
+- `make erase-flash` removes the entire chip contents, including the firmware image, Wi-Fi credentials, Matter fabrics, and the app's saved config.
+- `make erase-nvs` removes only the NVS partition, which is where Wi-Fi credentials, Matter state, and the app's persisted config live in this project.
+- `make fresh-flash` performs `erase-flash` and then flashes the current firmware again.
 
 `make monitor` uses a plain serial monitor that exits with `Ctrl+C`. `make monitor-idf` uses the ESP-IDF monitor if you want its richer decoding behavior; that one still uses the ESP-IDF keybindings such as `Ctrl+]` to exit.
 

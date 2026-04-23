@@ -3,13 +3,14 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <app-common/zap-generated/ids/Clusters.h>
 #include <app/server/Server.h>
+#include <platform/DeviceInfoProvider.h>
 #include <platform/PlatformManager.h>
 #include <platform/CHIPDeviceEvent.h>
-#include <platform/DeviceInfoProvider.h>
 #include <esp_matter.h>
 #include <esp_matter_attribute.h>
 #include <esp_matter_cluster.h>
@@ -26,7 +27,7 @@ using namespace esp_matter;
 using namespace chip::app::Clusters;
 
 static const char *TAG = "matter_app";
-static constexpr char kAccessoryName[] = "Display Control";
+static constexpr char kAccessoryName[] = "Display-Switcher";
 static constexpr char kLabelKey[] = "name";
 static constexpr char kBrightnessName[] = "Brightness";
 static constexpr char kContrastName[] = "Contrast";
@@ -34,6 +35,11 @@ static constexpr char kInputPrefix[] = "Input";
 static constexpr uint32_t kCommissioningWindowTimeoutSecs = 15 * 60;
 static constexpr TickType_t kInputResetDelay = pdMS_TO_TICKS(1000);
 static constexpr size_t kManagedEndpointCount = 2 + INPUT_SLOT_COUNT;
+static constexpr uint16_t kRootEndpointId = 0;
+
+static const char *input_label_for_slot(const display_config_t *config, size_t index);
+
+static esp_err_t sync_root_basic_information_metadata(const char *name);
 
 static uint8_t ddc_level_to_matter_level(uint8_t ddc_level)
 {
@@ -46,20 +52,9 @@ struct CommissioningWindowRequest {
     esp_err_t result;
 };
 
-static void open_commissioning_window_work(intptr_t arg)
-{
-    auto *request = reinterpret_cast<CommissioningWindowRequest *>(arg);
-    CHIP_ERROR err = chip::Server::GetInstance().GetCommissioningWindowManager().OpenBasicCommissioningWindow(
-        chip::System::Clock::Seconds32(kCommissioningWindowTimeoutSecs));
-    request->result = (err == CHIP_NO_ERROR) ? ESP_OK : ESP_FAIL;
-    if (request->result == ESP_OK) {
-        ESP_LOGI(TAG, "basic commissioning window opened for %lu seconds",
-                 static_cast<unsigned long>(kCommissioningWindowTimeoutSecs));
-    } else {
-        ESP_LOGW(TAG, "failed to open basic commissioning window");
-    }
-    xTaskNotifyGive(request->waiting_task);
-}
+struct InputResetRequest {
+    uint16_t endpoint_id;
+};
 
 struct FixedLabelEntry {
     chip::EndpointId endpoint_id;
@@ -77,6 +72,21 @@ struct EndpointUserLabelState {
     size_t length = 0;
     std::array<UserLabelStorage, chip::DeviceLayer::kMaxUserLabelListLength> labels = {};
 };
+
+static void open_commissioning_window_work(intptr_t arg)
+{
+    auto *request = reinterpret_cast<CommissioningWindowRequest *>(arg);
+    CHIP_ERROR err = chip::Server::GetInstance().GetCommissioningWindowManager().OpenBasicCommissioningWindow(
+        chip::System::Clock::Seconds32(kCommissioningWindowTimeoutSecs));
+    request->result = (err == CHIP_NO_ERROR) ? ESP_OK : ESP_FAIL;
+    if (request->result == ESP_OK) {
+        ESP_LOGI(TAG, "basic commissioning window opened for %lu seconds",
+                 static_cast<unsigned long>(kCommissioningWindowTimeoutSecs));
+    } else {
+        ESP_LOGW(TAG, "failed to open basic commissioning window");
+    }
+    xTaskNotifyGive(request->waiting_task);
+}
 
 class DeviceInfoProviderImpl : public chip::DeviceLayer::DeviceInfoProvider {
 public:
@@ -124,7 +134,7 @@ public:
 
     class UserLabelIteratorImpl : public chip::DeviceLayer::DeviceInfoProvider::UserLabelIterator {
     public:
-        UserLabelIteratorImpl(const EndpointUserLabelState *state) : m_state(state) {}
+        explicit UserLabelIteratorImpl(const EndpointUserLabelState *state) : m_state(state) {}
 
         size_t Count() override
         {
@@ -257,30 +267,29 @@ private:
     std::array<EndpointUserLabelState, kManagedEndpointCount> m_user_labels = {};
 };
 
-struct InputResetRequest {
-    uint16_t endpoint_id;
-};
-
 static matter_callbacks_t g_callbacks = {};
 static matter_runtime_t *g_runtime = nullptr;
 static bool g_internal_attribute_update = false;
+static std::array<std::array<char, INPUT_NAME_MAX_LEN>, INPUT_SLOT_COUNT> g_default_input_labels = {};
 static DeviceInfoProviderImpl g_device_info_provider;
-static std::array<FixedLabelEntry, kManagedEndpointCount> g_fixed_labels;
+static std::array<FixedLabelEntry, kManagedEndpointCount> g_fixed_labels = {};
 static std::array<std::array<char, INPUT_NAME_MAX_LEN>, kManagedEndpointCount> g_fixed_label_values = {};
 static std::array<endpoint_t *, INPUT_SLOT_COUNT> g_input_endpoints = {};
 
-class InternalAttributeUpdateGuard {
-public:
-    InternalAttributeUpdateGuard()
-    {
-        g_internal_attribute_update = true;
+static bool is_input_endpoint(uint16_t endpoint_id)
+{
+    if (g_runtime == nullptr) {
+        return false;
     }
 
-    ~InternalAttributeUpdateGuard()
-    {
-        g_internal_attribute_update = false;
+    for (uint16_t input_endpoint_id : g_runtime->input_endpoint_ids) {
+        if (input_endpoint_id == endpoint_id) {
+            return true;
+        }
     }
-};
+
+    return false;
+}
 
 static esp_err_t add_label_clusters(endpoint_t *endpoint)
 {
@@ -292,18 +301,6 @@ static esp_err_t add_label_clusters(endpoint_t *endpoint)
     VerifyOrReturnValue(cluster::user_label::create(endpoint, &user_label_cfg, CLUSTER_FLAG_SERVER) != nullptr, ESP_FAIL,
                         ESP_LOGE(TAG, "Failed to create User Label cluster"));
     return ESP_OK;
-}
-
-static const char *input_label_for_slot(const display_config_t *config, size_t index)
-{
-    const char *configured = config->inputs[index].name;
-    if (configured[0] != '\0') {
-        return configured;
-    }
-
-    std::snprintf(g_fixed_label_values[2 + index].data(), g_fixed_label_values[2 + index].size(), "%s %u", kInputPrefix,
-                  static_cast<unsigned int>(index + 1));
-    return g_fixed_label_values[2 + index].data();
 }
 
 static void set_fixed_label(size_t index, uint16_t endpoint_id, const char *value)
@@ -323,11 +320,51 @@ static esp_err_t seed_user_label(uint16_t endpoint_id, const char *value)
     user_label.label = chip::CharSpan::fromCharString(kLabelKey);
     user_label.value = chip::CharSpan::fromCharString(value);
 
-    CHIP_ERROR err = provider->SetUserLabelList(endpoint_id, chip::Span<const chip::DeviceLayer::DeviceInfoProvider::UserLabelType>(&user_label, 1));
+    CHIP_ERROR err = provider->SetUserLabelList(
+        endpoint_id, chip::Span<const chip::DeviceLayer::DeviceInfoProvider::UserLabelType>(&user_label, 1));
     VerifyOrReturnValue(err == CHIP_NO_ERROR, ESP_FAIL,
                         ESP_LOGE(TAG, "Failed to seed User Label for endpoint %u: %" CHIP_ERROR_FORMAT, endpoint_id,
                                  err.Format()));
     return ESP_OK;
+}
+
+static esp_err_t sync_root_basic_information_metadata(const char *name)
+{
+    esp_matter_attr_val_t product_name_val = esp_matter_char_str(const_cast<char *>(name), strlen(name));
+    ESP_RETURN_ON_ERROR(attribute::update(kRootEndpointId, BasicInformation::Id,
+                                          BasicInformation::Attributes::ProductName::Id, &product_name_val),
+                        TAG, "root product name update failed");
+
+    esp_matter_attr_val_t product_label_val = esp_matter_char_str(const_cast<char *>(name), strlen(name));
+    ESP_RETURN_ON_ERROR(attribute::update(kRootEndpointId, BasicInformation::Id,
+                                          BasicInformation::Attributes::ProductLabel::Id, &product_label_val),
+                        TAG, "root product label update failed");
+    return ESP_OK;
+}
+
+class InternalAttributeUpdateGuard {
+public:
+    InternalAttributeUpdateGuard()
+    {
+        g_internal_attribute_update = true;
+    }
+
+    ~InternalAttributeUpdateGuard()
+    {
+        g_internal_attribute_update = false;
+    }
+};
+
+static const char *input_label_for_slot(const display_config_t *config, size_t index)
+{
+    const char *configured = config->inputs[index].name;
+    if (configured[0] != '\0') {
+        return configured;
+    }
+
+    std::snprintf(g_default_input_labels[index].data(), g_default_input_labels[index].size(), "%s %u", kInputPrefix,
+                  static_cast<unsigned int>(index + 1));
+    return g_default_input_labels[index].data();
 }
 
 static void reset_input_endpoint_task(void *arg)
@@ -378,7 +415,7 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
     if (cluster_id == LevelControl::Id && attribute_id == LevelControl::Attributes::CurrentLevel::Id) {
         return g_callbacks.level_write ? g_callbacks.level_write(endpoint_id, val->val.u8, g_callbacks.ctx) : ESP_OK;
     }
-    if (cluster_id == OnOff::Id && attribute_id == OnOff::Attributes::OnOff::Id) {
+    if (cluster_id == OnOff::Id && attribute_id == OnOff::Attributes::OnOff::Id && is_input_endpoint(endpoint_id)) {
         if (!val->val.b) {
             return ESP_OK;
         }
@@ -428,6 +465,7 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
     brightness_cfg.level_control.current_level = 128;
     endpoint_t *brightness = endpoint::dimmable_light::create(node, &brightness_cfg, ENDPOINT_FLAG_NONE, nullptr);
     VerifyOrReturnValue(brightness != nullptr, ESP_FAIL, ESP_LOGE(TAG, "Failed to create brightness endpoint"));
+
     endpoint::dimmable_light::config_t contrast_cfg;
     contrast_cfg.on_off.on_off = true;
     contrast_cfg.level_control.current_level = 128;
@@ -443,7 +481,7 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
     for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
         endpoint::on_off_light::config_t input_cfg;
         input_cfg.on_off.on_off = false;
-        endpoint_t *input = endpoint::on_off_light::create(node, &input_cfg, ENDPOINT_FLAG_DESTROYABLE, nullptr);
+        endpoint_t *input = endpoint::on_off_light::create(node, &input_cfg, ENDPOINT_FLAG_NONE, nullptr);
         VerifyOrReturnValue(input != nullptr, ESP_FAIL, ESP_LOGE(TAG, "Failed to create input endpoint %u",
                                                                  static_cast<unsigned int>(index)));
         ESP_RETURN_ON_ERROR(add_label_clusters(input), TAG, "input label clusters failed");
@@ -453,10 +491,15 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
 
     set_fixed_label(0, runtime->brightness_endpoint_id, kBrightnessName);
     set_fixed_label(1, runtime->contrast_endpoint_id, kContrastName);
+    for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
+        set_fixed_label(2 + index, runtime->input_endpoint_ids[index], input_label_for_slot(config, index));
+    }
     g_device_info_provider.SetFixedLabelEntries(g_fixed_labels.data(), g_fixed_labels.size());
     esp_matter::set_custom_device_info_provider(&g_device_info_provider);
 
     ESP_RETURN_ON_ERROR(esp_matter::start(app_event_cb), TAG, "esp_matter start failed");
+    ESP_RETURN_ON_ERROR(sync_root_basic_information_metadata(kAccessoryName), TAG,
+                        "root basic information metadata sync failed");
     ESP_RETURN_ON_ERROR(seed_user_label(runtime->brightness_endpoint_id, kBrightnessName), TAG,
                         "brightness user label seed failed");
     ESP_RETURN_ON_ERROR(seed_user_label(runtime->contrast_endpoint_id, kContrastName), TAG,

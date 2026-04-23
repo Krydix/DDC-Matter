@@ -798,6 +798,8 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ddc_init(&app.ddc, 21, 22, 100000));
     apply_safe_defaults(&app.config);
     preload_saved_config(&app.config);
+    esp_err_t event_loop_err = esp_event_loop_create_default();
+    ESP_ERROR_CHECK((event_loop_err == ESP_OK || event_loop_err == ESP_ERR_INVALID_STATE) ? ESP_OK : event_loop_err);
     app.monitor_available = false;
     log_startup_i2c_probe(&app);
 
