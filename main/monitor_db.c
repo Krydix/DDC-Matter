@@ -87,6 +87,7 @@ size_t monitor_db_parse_input_values(const char *caps, input_slot_t *slots, size
     size_t count = ddc_extract_vcp_values(caps, 0x60, values, max_slots);
     for (size_t i = 0; i < count; ++i) {
         slots[i].value = values[i];
+        slots[i].enabled = true;
         strncpy(slots[i].name, mccs_input_label(values[i]), sizeof(slots[i].name) - 1);
         slots[i].name[sizeof(slots[i].name) - 1] = '\0';
     }

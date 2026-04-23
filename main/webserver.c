@@ -6,11 +6,15 @@
 
 #include "cJSON.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 
 static const char *TAG = "webserver";
-static const size_t HTTPD_STACK_SIZE = 8192;
+static const size_t HTTPD_STACK_SIZE = 4096;
+static const uint16_t HTTPD_MAX_OPEN_SOCKETS = 2;
+static const uint16_t HTTPD_MAX_RESP_HEADERS = 4;
+static const uint16_t HTTPD_BACKLOG_CONN = 1;
 static webserver_context_t *s_ctx;
 
 typedef struct {
@@ -62,6 +66,7 @@ static cJSON *build_config_json(void)
         cJSON *item = cJSON_CreateObject();
         cJSON_AddNumberToObject(item, "slot", i);
         cJSON_AddNumberToObject(item, "value", s_ctx->config->inputs[i].value);
+        cJSON_AddBoolToObject(item, "enabled", s_ctx->config->inputs[i].enabled);
         cJSON_AddStringToObject(item, "name", s_ctx->config->inputs[i].name);
         cJSON_AddItemToArray(inputs, item);
     }
@@ -249,9 +254,13 @@ static esp_err_t save_config_handler(httpd_req_t *req)
                 break;
             }
             cJSON *value = cJSON_GetObjectItemCaseSensitive(input, "value");
+            cJSON *enabled = cJSON_GetObjectItemCaseSensitive(input, "enabled");
             cJSON *name = cJSON_GetObjectItemCaseSensitive(input, "name");
             if (cJSON_IsNumber(value)) {
                 updated.inputs[i].value = (uint8_t)value->valueint;
+            }
+            if (cJSON_IsBool(enabled)) {
+                updated.inputs[i].enabled = cJSON_IsTrue(enabled);
             }
             if (cJSON_IsString(name) && name->valuestring != NULL) {
                 strncpy(updated.inputs[i].name, name->valuestring, sizeof(updated.inputs[i].name) - 1);
@@ -379,8 +388,17 @@ esp_err_t webserver_start(webserver_context_t *ctx)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = HTTPD_STACK_SIZE;
+    config.max_open_sockets = HTTPD_MAX_OPEN_SOCKETS;
     config.max_uri_handlers = 10;
-    ESP_RETURN_ON_ERROR(httpd_start(&server, &config), TAG, "httpd start failed");
+    config.max_resp_headers = HTTPD_MAX_RESP_HEADERS;
+    config.backlog_conn = HTTPD_BACKLOG_CONN;
+    ESP_LOGI(TAG, "starting httpd free_heap=%u internal_heap=%u", (unsigned int)esp_get_free_heap_size(),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    esp_err_t err = httpd_start(&server, &config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd start failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
     httpd_uri_t index = {.uri = "/", .method = HTTP_GET, .handler = index_handler};
     httpd_uri_t get_config = {.uri = "/api/config", .method = HTTP_GET, .handler = get_config_handler};

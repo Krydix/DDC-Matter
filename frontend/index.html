@@ -185,7 +185,7 @@
         <div class="label">Inputs</div>
         <table>
           <thead>
-            <tr><th>Mode</th><th>Hex Value</th><th>Name</th><th>Action</th></tr>
+            <tr><th>Mode</th><th>Enabled</th><th>Hex Value</th><th>Name</th><th>Action</th></tr>
           </thead>
           <tbody id="inputs-body"></tbody>
         </table>
@@ -293,9 +293,10 @@
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>Input ${index + 1}</td>
+          <td><input data-kind="enabled" data-index="${index}" type="checkbox" ${input.enabled !== false ? "checked" : ""}></td>
           <td><input data-kind="value" data-index="${index}" type="number" min="0" max="255" value="${input.value}"></td>
           <td><input data-kind="name" data-index="${index}" value="${input.name || ""}"></td>
-          <td><button data-test="${index}">Test</button></td>
+          <td><button data-test="${index}" ${input.enabled === false ? "disabled" : ""}>Test</button></td>
         `;
         body.appendChild(tr);
       });
@@ -397,6 +398,7 @@
 
     async function saveConfig() {
       const inputs = state.inputs.map((input, index) => ({
+        enabled: document.querySelector(`[data-kind="enabled"][data-index="${index}"]`).checked,
         value: Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value),
         name: document.querySelector(`[data-kind="name"][data-index="${index}"]`).value
       }));
@@ -482,6 +484,11 @@
       }
 
       const value = Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value);
+      const enabled = document.querySelector(`[data-kind="enabled"][data-index="${index}"]`).checked;
+      if (!enabled) {
+        setStatus("Enable the input before sending a test command");
+        return;
+      }
       try {
         setStatus(`Testing input value 0x${value.toString(16).padStart(2, "0")}`);
         await fetchJson("/api/test", {

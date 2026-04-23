@@ -218,6 +218,17 @@ static void copy_inputs_from_slots(display_config_t *config, const input_slot_t 
     }
 }
 
+static bool find_input_slot_for_endpoint(const matter_runtime_t *runtime, uint16_t endpoint_id, uint8_t *slot)
+{
+    for (uint8_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
+        if (runtime->input_endpoint_ids[index] == endpoint_id) {
+            *slot = index;
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool has_input_value(const uint8_t *values, size_t count, uint16_t value)
 {
     for (size_t index = 0; index < count; ++index) {
@@ -307,6 +318,7 @@ static void apply_discovered_inputs(display_config_t *config, const uint8_t *val
 
     for (size_t index = 0; index < count && out < INPUT_SLOT_COUNT; ++index) {
         slots[out].value = values[index];
+        slots[out].enabled = true;
         std::strncpy(slots[out].name, mccs_input_label(values[index]), sizeof(slots[out].name) - 1);
         ++out;
     }
@@ -341,6 +353,18 @@ static void apply_safe_defaults(display_config_t *config)
     config->brightness_vcp = 0x10;
     config->contrast_vcp = 0x12;
     mccs_fill_default_inputs_for_display(config->inputs, INPUT_SLOT_COUNT, config->monitor_name, config->pnp_id);
+}
+
+static void preload_saved_config(display_config_t *config)
+{
+    display_config_t stored_user = {};
+    bool user_found = false;
+
+    if (config_load_user(&stored_user, &user_found) != ESP_OK || !user_found || !stored_user.user_override) {
+        return;
+    }
+
+    *config = stored_user;
 }
 
 static void log_startup_i2c_probe(app_context_t *app)
@@ -513,17 +537,25 @@ static esp_err_t matter_level_write(uint16_t endpoint_id, uint8_t level, void *c
     return ddc_set_vcp(&app->ddc, vcp, ddc_value);
 }
 
-static esp_err_t matter_mode_write(uint8_t mode, void *ctx)
+static esp_err_t matter_input_write(uint16_t endpoint_id, bool on, void *ctx)
 {
     app_context_t *app = static_cast<app_context_t *>(ctx);
-    if (mode >= INPUT_SLOT_COUNT) {
-        return ESP_ERR_INVALID_ARG;
+    uint8_t slot = 0;
+
+    if (!on) {
+        return ESP_OK;
+    }
+    if (!find_input_slot_for_endpoint(&app->matter, endpoint_id, &slot)) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (slot >= INPUT_SLOT_COUNT || !app->config.inputs[slot].enabled) {
+        return ESP_ERR_INVALID_STATE;
     }
     if (!app->monitor_available) {
         ESP_LOGW(TAG, "ignoring Matter input write while monitor is unavailable");
         return ESP_OK;
     }
-    return set_input_value(app, app->config.inputs[mode].value);
+    return set_input_value(app, app->config.inputs[slot].value);
 }
 
 static esp_err_t apply_config_cb(const display_config_t *config, void *ctx)
@@ -533,8 +565,7 @@ static esp_err_t apply_config_cb(const display_config_t *config, void *ctx)
     app->config.user_override = true;
     app->config.profile_cached = false;
     app->config.db_match = false;
-    ESP_RETURN_ON_ERROR(matter_update_supported_modes(&app->config, app->matter.input_endpoint_id), TAG,
-                        "update supported modes failed");
+    ESP_RETURN_ON_ERROR(matter_sync_input_endpoints(&app->config), TAG, "input endpoint sync failed");
     ESP_RETURN_ON_ERROR(config_save_user(&app->config), TAG, "save user config failed");
     return ESP_OK;
 }
@@ -619,8 +650,7 @@ static esp_err_t probe_inputs_cb(void *ctx)
     apply_discovered_inputs(&app->config, discovered, discovered_count);
     app->config.db_match = false;
     app->config.profile_cached = false;
-    ESP_RETURN_ON_ERROR(matter_update_supported_modes(&app->config, app->matter.input_endpoint_id), TAG,
-                        "update supported modes failed");
+    ESP_RETURN_ON_ERROR(matter_sync_input_endpoints(&app->config), TAG, "input endpoint sync failed");
     sync_runtime_state(app);
     ESP_LOGI(TAG, "input probe discovered %u unique input values", (unsigned int)discovered_count);
     return ESP_OK;
@@ -630,14 +660,14 @@ static esp_err_t detect_cb(void *ctx)
 {
     app_context_t *app = static_cast<app_context_t *>(ctx);
     ESP_RETURN_ON_ERROR(detect_monitor(app, false), TAG, "detect failed");
-    return matter_update_supported_modes(&app->config, app->matter.input_endpoint_id);
+    return matter_sync_input_endpoints(&app->config);
 }
 
 static esp_err_t refresh_db_cb(void *ctx)
 {
     app_context_t *app = static_cast<app_context_t *>(ctx);
     ESP_RETURN_ON_ERROR(detect_monitor(app, true), TAG, "db refresh detect failed");
-    return matter_update_supported_modes(&app->config, app->matter.input_endpoint_id);
+    return matter_sync_input_endpoints(&app->config);
 }
 
 static esp_err_t get_level_cb(bool contrast, uint8_t vcp, ddc_vcp_value_t *value, void *ctx)
@@ -676,7 +706,6 @@ static esp_err_t get_input_source_state_cb(web_input_source_state_t *state, void
  * so I2C is not driven from the Matter event-loop task. */
 static void sync_runtime_state(app_context_t *app)
 {
-    uint8_t current_mode = app->last_known_mode;
     if (app->monitor_available) {
         ddc_vcp_value_t brightness = {};
         if (ddc_get_vcp(&app->ddc, app->config.brightness_vcp, &brightness) == ESP_OK && brightness.present) {
@@ -690,7 +719,6 @@ static void sync_runtime_state(app_context_t *app)
         if (read_current_input_value(app, &input) == ESP_OK && input.present) {
             uint8_t matched_mode = 0;
             if (try_find_mode_for_input(&app->config, input.current_value, &matched_mode)) {
-                current_mode = matched_mode;
                 app->last_known_mode = matched_mode;
             }
             app->last_requested_input_valid = true;
@@ -699,7 +727,11 @@ static void sync_runtime_state(app_context_t *app)
     } else {
         ESP_LOGI(TAG, "skipping initial DDC polling because no monitor is connected");
     }
-    matter_update_mode(app->matter.input_endpoint_id, current_mode);
+
+    for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
+        matter_update_input_state(app->matter.input_endpoint_ids[index], false);
+    }
+
     ESP_LOGI(TAG, "monitor=%s pnp=%s db_match=%d", app->config.monitor_name, app->config.pnp_id, app->config.db_match);
 }
 
@@ -723,7 +755,7 @@ static void start_post_commissioning(app_context_t *app)
         ESP_LOGW(TAG, "post-commissioning detect failed: %s", esp_err_to_name(detect_err));
     }
 
-    ESP_ERROR_CHECK(matter_update_supported_modes(&app->config, app->matter.input_endpoint_id));
+    ESP_ERROR_CHECK(matter_sync_input_endpoints(&app->config));
 
     sync_runtime_state(app);
 }
@@ -765,12 +797,13 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(config_storage_init());
     ESP_ERROR_CHECK(ddc_init(&app.ddc, 21, 22, 100000));
     apply_safe_defaults(&app.config);
+    preload_saved_config(&app.config);
     app.monitor_available = false;
     log_startup_i2c_probe(&app);
 
     matter_callbacks_t callbacks = {};
     callbacks.level_write = matter_level_write;
-    callbacks.mode_write = matter_mode_write;
+    callbacks.input_write = matter_input_write;
     callbacks.commissioning_complete = matter_commissioning_complete;
     callbacks.ctx = &app;
     ESP_ERROR_CHECK(matter_start(&app.config, &app.matter, &callbacks));

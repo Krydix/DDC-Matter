@@ -17,6 +17,7 @@ extern "C" {
 
 typedef struct {
     uint8_t value;
+    bool enabled;
     char name[INPUT_NAME_MAX_LEN];
 } input_slot_t;
 

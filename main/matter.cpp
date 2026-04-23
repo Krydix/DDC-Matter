@@ -7,7 +7,6 @@
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <app-common/zap-generated/ids/Clusters.h>
 #include <app/server/Server.h>
-#include <app/clusters/mode-select-server/supported-modes-manager.h>
 #include <platform/PlatformManager.h>
 #include <platform/CHIPDeviceEvent.h>
 #include <platform/DeviceInfoProvider.h>
@@ -31,8 +30,10 @@ static constexpr char kAccessoryName[] = "Display Control";
 static constexpr char kLabelKey[] = "name";
 static constexpr char kBrightnessName[] = "Brightness";
 static constexpr char kContrastName[] = "Contrast";
-static constexpr char kInputName[] = "Input Source";
+static constexpr char kInputPrefix[] = "Input";
 static constexpr uint32_t kCommissioningWindowTimeoutSecs = 15 * 60;
+static constexpr TickType_t kInputResetDelay = pdMS_TO_TICKS(1000);
+static constexpr size_t kManagedEndpointCount = 2 + INPUT_SLOT_COUNT;
 
 static uint8_t ddc_level_to_matter_level(uint8_t ddc_level)
 {
@@ -59,62 +60,6 @@ static void open_commissioning_window_work(intptr_t arg)
     }
     xTaskNotifyGive(request->waiting_task);
 }
-
-class InputModesManager : public chip::app::Clusters::ModeSelect::SupportedModesManager {
-public:
-    using ModeOptionStructType = chip::app::Clusters::ModeSelect::Structs::ModeOptionStruct::Type;
-    using SemanticTagType = chip::app::Clusters::ModeSelect::Structs::SemanticTagStruct::Type;
-
-    void Update(chip::EndpointId endpoint_id, const display_config_t *config)
-    {
-        m_endpoint_id = endpoint_id;
-        m_count = INPUT_SLOT_COUNT;
-        for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
-            const char *name = config->inputs[index].name[0] != '\0' ? config->inputs[index].name : nullptr;
-            if (name == nullptr) {
-                std::snprintf(m_labels[index].data(), m_labels[index].size(), "Input %u", (unsigned int)(index + 1));
-            } else {
-                std::snprintf(m_labels[index].data(), m_labels[index].size(), "%s", name);
-            }
-
-            m_modes[index].label = chip::CharSpan::fromCharString(m_labels[index].data());
-            m_modes[index].mode = static_cast<uint8_t>(index);
-            m_modes[index].semanticTags = chip::app::DataModel::List<const SemanticTagType>(m_empty_semantic_tags.data(), 0);
-        }
-    }
-
-    ModeOptionsProvider getModeOptionsProvider(chip::EndpointId endpoint_id) const override
-    {
-        if (endpoint_id != m_endpoint_id || m_count == 0) {
-            return ModeOptionsProvider();
-        }
-        return ModeOptionsProvider(m_modes.data(), m_modes.data() + m_count);
-    }
-
-    chip::Protocols::InteractionModel::Status getModeOptionByMode(chip::EndpointId endpoint_id, uint8_t mode,
-                                                                  const ModeOptionStructType **data_ptr) const override
-    {
-        if (endpoint_id != m_endpoint_id) {
-            return chip::Protocols::InteractionModel::Status::UnsupportedCluster;
-        }
-
-        for (size_t index = 0; index < m_count; ++index) {
-            if (m_modes[index].mode == mode) {
-                *data_ptr = &m_modes[index];
-                return chip::Protocols::InteractionModel::Status::Success;
-            }
-        }
-
-        return chip::Protocols::InteractionModel::Status::InvalidCommand;
-    }
-
-private:
-    chip::EndpointId m_endpoint_id = chip::kInvalidEndpointId;
-    size_t m_count = 0;
-    std::array<SemanticTagType, 1> m_empty_semantic_tags = {};
-    std::array<std::array<char, INPUT_NAME_MAX_LEN>, INPUT_SLOT_COUNT> m_labels = {};
-    std::array<ModeOptionStructType, INPUT_SLOT_COUNT> m_modes = {};
-};
 
 struct FixedLabelEntry {
     chip::EndpointId endpoint_id;
@@ -309,15 +254,20 @@ private:
 
     const FixedLabelEntry *m_entries = nullptr;
     size_t m_entry_count = 0;
-    std::array<EndpointUserLabelState, 3> m_user_labels = {};
+    std::array<EndpointUserLabelState, kManagedEndpointCount> m_user_labels = {};
+};
+
+struct InputResetRequest {
+    uint16_t endpoint_id;
 };
 
 static matter_callbacks_t g_callbacks = {};
 static matter_runtime_t *g_runtime = nullptr;
 static bool g_internal_attribute_update = false;
 static DeviceInfoProviderImpl g_device_info_provider;
-static std::array<FixedLabelEntry, 3> g_fixed_labels;
-static InputModesManager g_input_modes_manager;
+static std::array<FixedLabelEntry, kManagedEndpointCount> g_fixed_labels;
+static std::array<std::array<char, INPUT_NAME_MAX_LEN>, kManagedEndpointCount> g_fixed_label_values = {};
+static std::array<endpoint_t *, INPUT_SLOT_COUNT> g_input_endpoints = {};
 
 class InternalAttributeUpdateGuard {
 public:
@@ -344,11 +294,24 @@ static esp_err_t add_label_clusters(endpoint_t *endpoint)
     return ESP_OK;
 }
 
+static const char *input_label_for_slot(const display_config_t *config, size_t index)
+{
+    const char *configured = config->inputs[index].name;
+    if (configured[0] != '\0') {
+        return configured;
+    }
+
+    std::snprintf(g_fixed_label_values[2 + index].data(), g_fixed_label_values[2 + index].size(), "%s %u", kInputPrefix,
+                  static_cast<unsigned int>(index + 1));
+    return g_fixed_label_values[2 + index].data();
+}
+
 static void set_fixed_label(size_t index, uint16_t endpoint_id, const char *value)
 {
+    std::snprintf(g_fixed_label_values[index].data(), g_fixed_label_values[index].size(), "%s", value);
     g_fixed_labels[index].endpoint_id = endpoint_id;
     g_fixed_labels[index].label = chip::CharSpan::fromCharString(kLabelKey);
-    g_fixed_labels[index].value = chip::CharSpan::fromCharString(value);
+    g_fixed_labels[index].value = chip::CharSpan::fromCharString(g_fixed_label_values[index].data());
 }
 
 static esp_err_t seed_user_label(uint16_t endpoint_id, const char *value)
@@ -365,6 +328,29 @@ static esp_err_t seed_user_label(uint16_t endpoint_id, const char *value)
                         ESP_LOGE(TAG, "Failed to seed User Label for endpoint %u: %" CHIP_ERROR_FORMAT, endpoint_id,
                                  err.Format()));
     return ESP_OK;
+}
+
+static void reset_input_endpoint_task(void *arg)
+{
+    std::unique_ptr<InputResetRequest> request(static_cast<InputResetRequest *>(arg));
+    vTaskDelay(kInputResetDelay);
+    matter_update_input_state(request->endpoint_id, false);
+    vTaskDelete(NULL);
+}
+
+static void schedule_input_reset(uint16_t endpoint_id)
+{
+    InputResetRequest *request = new InputResetRequest{endpoint_id};
+    if (request == nullptr) {
+        ESP_LOGW(TAG, "failed to allocate input reset request");
+        return;
+    }
+
+    BaseType_t task_ok = xTaskCreate(reset_input_endpoint_task, "matter_input_reset", 3072, request, 5, NULL);
+    if (task_ok != pdPASS) {
+        ESP_LOGW(TAG, "failed to create input reset task");
+        delete request;
+    }
 }
 
 static esp_err_t app_identification_cb(identification::callback_type_t type, uint16_t endpoint_id, uint8_t effect_id,
@@ -392,8 +378,16 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
     if (cluster_id == LevelControl::Id && attribute_id == LevelControl::Attributes::CurrentLevel::Id) {
         return g_callbacks.level_write ? g_callbacks.level_write(endpoint_id, val->val.u8, g_callbacks.ctx) : ESP_OK;
     }
-    if (cluster_id == ModeSelect::Id && attribute_id == ModeSelect::Attributes::CurrentMode::Id) {
-        return g_callbacks.mode_write ? g_callbacks.mode_write(val->val.u8, g_callbacks.ctx) : ESP_OK;
+    if (cluster_id == OnOff::Id && attribute_id == OnOff::Attributes::OnOff::Id) {
+        if (!val->val.b) {
+            return ESP_OK;
+        }
+
+        esp_err_t err = g_callbacks.input_write ? g_callbacks.input_write(endpoint_id, val->val.b, g_callbacks.ctx) : ESP_OK;
+        if (err == ESP_OK) {
+            schedule_input_reset(endpoint_id);
+        }
+        return err;
     }
     return ESP_OK;
 }
@@ -440,40 +434,34 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
     endpoint_t *contrast = endpoint::dimmable_light::create(node, &contrast_cfg, ENDPOINT_FLAG_NONE, nullptr);
     VerifyOrReturnValue(contrast != nullptr, ESP_FAIL, ESP_LOGE(TAG, "Failed to create contrast endpoint"));
 
-    endpoint_t *input = endpoint::create(node, ENDPOINT_FLAG_NONE, nullptr);
-    VerifyOrReturnValue(input != nullptr, ESP_FAIL, ESP_LOGE(TAG, "Failed to create input endpoint"));
-    cluster::descriptor::config_t descriptor_cfg;
-    cluster::identify::config_t identify_cfg;
-    cluster::descriptor::create(input, &descriptor_cfg, CLUSTER_FLAG_SERVER);
-    cluster::identify::create(input, &identify_cfg, CLUSTER_FLAG_SERVER);
-    cluster::mode_select::config_t mode_cfg;
-    mode_cfg.current_mode = 0;
-    cluster_t *mode_cluster = cluster::mode_select::create(input, &mode_cfg, CLUSTER_FLAG_SERVER);
-    (void)mode_cluster;
-
     runtime->brightness_endpoint_id = endpoint::get_id(brightness);
     runtime->contrast_endpoint_id = endpoint::get_id(contrast);
-    runtime->input_endpoint_id = endpoint::get_id(input);
 
     ESP_RETURN_ON_ERROR(add_label_clusters(brightness), TAG, "brightness label clusters failed");
     ESP_RETURN_ON_ERROR(add_label_clusters(contrast), TAG, "contrast label clusters failed");
-    ESP_RETURN_ON_ERROR(add_label_clusters(input), TAG, "input label clusters failed");
+
+    for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
+        endpoint::on_off_light::config_t input_cfg;
+        input_cfg.on_off.on_off = false;
+        endpoint_t *input = endpoint::on_off_light::create(node, &input_cfg, ENDPOINT_FLAG_DESTROYABLE, nullptr);
+        VerifyOrReturnValue(input != nullptr, ESP_FAIL, ESP_LOGE(TAG, "Failed to create input endpoint %u",
+                                                                 static_cast<unsigned int>(index)));
+        ESP_RETURN_ON_ERROR(add_label_clusters(input), TAG, "input label clusters failed");
+        g_input_endpoints[index] = input;
+        runtime->input_endpoint_ids[index] = endpoint::get_id(input);
+    }
 
     set_fixed_label(0, runtime->brightness_endpoint_id, kBrightnessName);
     set_fixed_label(1, runtime->contrast_endpoint_id, kContrastName);
-    set_fixed_label(2, runtime->input_endpoint_id, kInputName);
     g_device_info_provider.SetFixedLabelEntries(g_fixed_labels.data(), g_fixed_labels.size());
     esp_matter::set_custom_device_info_provider(&g_device_info_provider);
-    chip::app::Clusters::ModeSelect::setSupportedModesManager(&g_input_modes_manager);
-    g_input_modes_manager.Update(runtime->input_endpoint_id, config);
 
     ESP_RETURN_ON_ERROR(esp_matter::start(app_event_cb), TAG, "esp_matter start failed");
     ESP_RETURN_ON_ERROR(seed_user_label(runtime->brightness_endpoint_id, kBrightnessName), TAG,
                         "brightness user label seed failed");
     ESP_RETURN_ON_ERROR(seed_user_label(runtime->contrast_endpoint_id, kContrastName), TAG,
                         "contrast user label seed failed");
-    ESP_RETURN_ON_ERROR(seed_user_label(runtime->input_endpoint_id, kInputName), TAG,
-                        "input user label seed failed");
+    ESP_RETURN_ON_ERROR(matter_sync_input_endpoints(config), TAG, "initial input endpoint sync failed");
 
     return ESP_OK;
 }
@@ -481,20 +469,36 @@ extern "C" esp_err_t matter_start(const display_config_t *config, matter_runtime
 extern "C" esp_err_t matter_update_level(uint16_t endpoint_id, uint8_t level)
 {
     InternalAttributeUpdateGuard guard;
-    esp_matter_attr_val_t val = esp_matter_uint8(ddc_level_to_matter_level(level));
+    esp_matter_attr_val_t val = esp_matter_nullable_uint8(ddc_level_to_matter_level(level));
     return attribute::update(endpoint_id, LevelControl::Id, LevelControl::Attributes::CurrentLevel::Id, &val);
 }
 
-extern "C" esp_err_t matter_update_mode(uint16_t endpoint_id, uint8_t mode)
+extern "C" esp_err_t matter_update_input_state(uint16_t endpoint_id, bool on)
 {
     InternalAttributeUpdateGuard guard;
-    esp_matter_attr_val_t val = esp_matter_uint8(mode);
-    return attribute::update(endpoint_id, ModeSelect::Id, ModeSelect::Attributes::CurrentMode::Id, &val);
+    esp_matter_attr_val_t val = esp_matter_bool(on);
+    return attribute::update(endpoint_id, OnOff::Id, OnOff::Attributes::OnOff::Id, &val);
 }
 
-extern "C" esp_err_t matter_update_supported_modes(const display_config_t *config, uint16_t endpoint_id)
+extern "C" esp_err_t matter_sync_input_endpoints(const display_config_t *config)
 {
-    g_input_modes_manager.Update(endpoint_id, config);
+    VerifyOrReturnValue(g_runtime != nullptr, ESP_ERR_INVALID_STATE, ESP_LOGE(TAG, "matter runtime unavailable"));
+
+    for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
+        uint16_t endpoint_id = g_runtime->input_endpoint_ids[index];
+        const char *label = input_label_for_slot(config, index);
+
+        set_fixed_label(2 + index, endpoint_id, label);
+        ESP_RETURN_ON_ERROR(seed_user_label(endpoint_id, label), TAG, "input user label seed failed");
+        ESP_RETURN_ON_ERROR(matter_update_input_state(endpoint_id, false), TAG, "input state reset failed");
+
+        if (config->inputs[index].enabled) {
+            ESP_RETURN_ON_ERROR(endpoint::enable(g_input_endpoints[index]), TAG, "input endpoint enable failed");
+        } else {
+            ESP_RETURN_ON_ERROR(endpoint::disable(g_input_endpoints[index]), TAG, "input endpoint disable failed");
+        }
+    }
+
     return ESP_OK;
 }
 

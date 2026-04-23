@@ -44,6 +44,7 @@ static void fill_inputs_from_values(input_slot_t *slots, size_t count, const uin
     for (size_t i = 0; i < count; ++i) {
         uint8_t value = values[i % value_count];
         slots[i].value = value;
+        slots[i].enabled = true;
         strncpy(slots[i].name, mccs_input_label(value), sizeof(slots[i].name) - 1);
         slots[i].name[sizeof(slots[i].name) - 1] = '\0';
     }
