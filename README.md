@@ -20,6 +20,19 @@ It uses **DDC/CI over I²C** to read the monitor's EDID, query and set VCP codes
 
 ---
 
+## LG-Specific Behavior
+
+Some LG displays expose standard MCCS input feature `0x60` in their capabilities string but do not return a usable current input through that register. The firmware now handles that case more defensively:
+
+- adds a short delay between `GetVCP` transmit and receive so slow DDC/CI replies are parsed reliably
+- rejects `0x60` input readback when the monitor reports `current=0`
+- falls back to LG-specific heuristics when EDID identifies an LG display (`monitor name` starts with `LG ` or PnP ID is `GSM`)
+- uses manufacturer feature `0xF8` as an additional fingerprint when normal input readback is unavailable
+
+This does not make LG input state perfect for every model, but it prevents the main firmware from treating bogus `0x60` data as authoritative.
+
+---
+
 ## Hardware
 
 | Signal | GPIO |
@@ -112,6 +125,8 @@ LG-specific values used by some displays:
 
 Not all LG displays use the same family of LG-specific inputs. For example, some models appear to use `USB-C 3` and `DisplayPort 3`, while others use `USB-C 1` and `DisplayPort 1`. So for LG displays, users may need to try both the `1/2` and `3/4` LG-specific families.
 
+For the current LG probing fallback, the firmware prioritizes these LG candidates first: `0xD0`, `0xD1`, `0x90`, `0x91`, `0xD2`.
+
 ---
 
 ## Web Config UI
@@ -203,6 +218,26 @@ QR payload:        MT:Y.K9042C00KA0648G00
 In Apple Home, use Add Accessory, then More Options if the device does not appear immediately in the first scan list. The device advertises over BLE for initial commissioning, then uses Matter DNS-SD (`_matterc._udp` before pairing and `_matter._tcp` after pairing).
 
 To keep commissioning isolated from the rest of the application, monitor detection, DDC polling, and the web UI now start only after the device has completed Matter commissioning or on later boots when it is already commissioned.
+
+### Standalone Debug Image
+
+If you want the raw UART debug shell instead of the normal Matter app:
+
+```bash
+make build-debug
+make flash-debug
+make monitor
+```
+
+For non-interactive command sending from the host, use:
+
+```bash
+python3 scripts/serial_debug.py input
+python3 scripts/serial_debug.py "probe-known"
+python3 scripts/serial_debug.py "ddc-get 0x51 0x60"
+```
+
+The helper auto-detects a serial port when possible and waits for the `dbg> ` prompt between commands.
 
 If flashing fails with `Failed to connect to ESP32: No serial data received`, the serial port is correct but the chip did not enter the ROM bootloader. Two built-in fallback paths are available:
 

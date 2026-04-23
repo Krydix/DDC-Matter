@@ -26,10 +26,14 @@ typedef struct {
     bool present;
 } ddc_vcp_value_t;
 
+bool ddc_input_source_value_is_usable(uint8_t vcp_code, const ddc_vcp_value_t *value);
+
 esp_err_t ddc_init(ddc_bus_t *bus, int sda_gpio, int scl_gpio, uint32_t speed_hz);
 esp_err_t ddc_read_edid(ddc_bus_t *bus, uint8_t *buffer, size_t len);
 esp_err_t ddc_set_vcp(ddc_bus_t *bus, uint8_t vcp_code, uint16_t value);
 esp_err_t ddc_get_vcp(ddc_bus_t *bus, uint8_t vcp_code, ddc_vcp_value_t *value);
+esp_err_t ddc_set_vcp_for_destination(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value);
+esp_err_t ddc_get_vcp_for_destination(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value);
 esp_err_t ddc_set_input_source(ddc_bus_t *bus, uint8_t value);
 esp_err_t ddc_get_input_source_standard(ddc_bus_t *bus, ddc_vcp_value_t *value);
 esp_err_t ddc_get_input_source_alternate(ddc_bus_t *bus, ddc_vcp_value_t *value);

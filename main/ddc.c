@@ -6,6 +6,8 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "ddc";
 static const uint8_t kStandardDdcDest = 0x51;
@@ -13,6 +15,7 @@ static const uint8_t kAlternateDdcDest = 0x50;
 static const uint8_t kGetVcpResponseOpcode = 0x02;
 static const uint8_t kStandardInputVcp = 0x60;
 static const uint8_t kAlternateInputVcp = 0xF4;
+static const TickType_t kGetVcpResponseDelay = pdMS_TO_TICKS(200);
 
 static esp_err_t ddc_set_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value);
 static esp_err_t ddc_get_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value);
@@ -55,6 +58,23 @@ static uint8_t ddc_checksum(uint8_t addr, const uint8_t *payload, size_t len)
     return checksum;
 }
 
+bool ddc_input_source_value_is_usable(uint8_t vcp_code, const ddc_vcp_value_t *value)
+{
+    if (value == NULL || !value->present) {
+        return false;
+    }
+
+    if (vcp_code == kStandardInputVcp && value->current_value == 0x0000) {
+        return false;
+    }
+
+    if (vcp_code == kAlternateInputVcp && value->current_value == 0x0000 && value->maximum_value == 0x0000) {
+        return false;
+    }
+
+    return true;
+}
+
 esp_err_t ddc_init(ddc_bus_t *bus, int sda_gpio, int scl_gpio, uint32_t speed_hz)
 {
     i2c_master_bus_config_t bus_cfg = {
@@ -94,6 +114,11 @@ esp_err_t ddc_set_vcp(ddc_bus_t *bus, uint8_t vcp_code, uint16_t value)
     return ddc_set_vcp_target(bus, kStandardDdcDest, vcp_code, value);
 }
 
+esp_err_t ddc_set_vcp_for_destination(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value)
+{
+    return ddc_set_vcp_target(bus, ddc_dest, vcp_code, value);
+}
+
 static esp_err_t ddc_set_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value)
 {
     uint8_t packet[7] = {
@@ -114,6 +139,11 @@ esp_err_t ddc_get_vcp(ddc_bus_t *bus, uint8_t vcp_code, ddc_vcp_value_t *value)
     return ddc_get_vcp_target(bus, kStandardDdcDest, vcp_code, value);
 }
 
+esp_err_t ddc_get_vcp_for_destination(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value)
+{
+    return ddc_get_vcp_target(bus, ddc_dest, vcp_code, value);
+}
+
 static esp_err_t ddc_get_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value)
 {
     uint8_t request[5] = {ddc_dest, 0x82, 0x01, vcp_code, 0x00};
@@ -124,6 +154,7 @@ static esp_err_t ddc_get_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vc
     request[4] = ddc_checksum((DDC_CI_ADDRESS << 1), request, sizeof(request) - 1);
 
     ESP_RETURN_ON_ERROR(i2c_master_transmit(bus->ddc_dev, request, sizeof(request), 1000), TAG, "get vcp tx failed");
+    vTaskDelay(kGetVcpResponseDelay);
     ESP_RETURN_ON_ERROR(i2c_master_receive(bus->ddc_dev, response, sizeof(response), 1000), TAG, "get vcp rx failed");
 
     ESP_LOGD(TAG,
@@ -164,10 +195,16 @@ esp_err_t ddc_get_input_source_alternate(ddc_bus_t *bus, ddc_vcp_value_t *value)
 esp_err_t ddc_get_input_source(ddc_bus_t *bus, ddc_vcp_value_t *value)
 {
     esp_err_t err = ddc_get_input_source_standard(bus, value);
-    if (err == ESP_OK && value->present) {
+    if (err == ESP_OK && ddc_input_source_value_is_usable(kStandardInputVcp, value)) {
         return ESP_OK;
     }
-    return ddc_get_input_source_alternate(bus, value);
+
+    err = ddc_get_input_source_alternate(bus, value);
+    if (err == ESP_OK && ddc_input_source_value_is_usable(kAlternateInputVcp, value)) {
+        return ESP_OK;
+    }
+
+    return err;
 }
 
 esp_err_t ddc_query_capabilities(ddc_bus_t *bus, char *buffer, size_t len)

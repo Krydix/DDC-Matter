@@ -37,7 +37,7 @@ static const input_map_t k_input_map[] = {
 };
 
 static const uint8_t k_standard_probe_values[] = {0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x19, 0x1B, 0x1C};
-static const uint8_t k_lg_probe_values[] = {0xD0, 0xD1, 0xC0, 0xC1, 0x90, 0x91, 0x92, 0x93, 0xD2, 0xD3, 0xE0, 0xE1};
+static const uint8_t k_lg_probe_values[] = {0xD0, 0xD1, 0x90, 0x91, 0xD2, 0xC0, 0xC1, 0xD3, 0xE0, 0xE1, 0x92, 0x93};
 
 static void fill_inputs_from_values(input_slot_t *slots, size_t count, const uint8_t *values, size_t value_count)
 {
@@ -98,6 +98,22 @@ const char *mccs_input_label(uint8_t value)
 bool mccs_monitor_uses_lg_inputs(const char *monitor_name, const char *pnp_id)
 {
     return ascii_starts_with_ignore_case(monitor_name, "LG ") || ascii_equals_ignore_case(pnp_id, "GSM");
+}
+
+bool mccs_input_matches_lg_fingerprint(uint8_t input_value, uint8_t fingerprint)
+{
+    switch (fingerprint) {
+        case 0x00:
+            return input_value == 0xD1;
+        case 0x03:
+            return input_value == 0x0F || input_value == 0x11 || input_value == 0x12 || input_value == 0x90 ||
+                   input_value == 0x91 || input_value == 0xD0;
+        case 0xFF:
+            return input_value == 0xC0 || input_value == 0xC1 || input_value == 0xD2 || input_value == 0xD3 ||
+                   input_value == 0xE0 || input_value == 0xE1;
+        default:
+            return false;
+    }
 }
 
 void mccs_fill_default_inputs(input_slot_t *slots, size_t count)

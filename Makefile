@@ -21,6 +21,9 @@ FLASH_BAUD ?= 460800
 MONITOR_BAUD ?= 115200
 FLASH_BEFORE ?= default_reset
 FLASH_AFTER ?= hard_reset
+BUILD_DIR ?= $(ROOT_DIR)/build
+DEBUG_BUILD_DIR ?= $(ROOT_DIR)/build-debug
+DEBUG_BUILD_FLAG := -D DDC_STANDALONE_DEBUG=ON
 
 .DEFAULT_GOAL := help
 
@@ -64,7 +67,7 @@ define run_idf
 		. "$$IDF_PATH/export.sh" >/dev/null 2>&1; \
 		export PATH="$(CMAKE_BIN_DIR):$$PATH"; \
 		cd "$(ROOT_DIR)"; \
-		"$(IDF_PYTHON)" "$$IDF_PATH/tools/idf.py" $$port_arg $$baud_arg $(1)'
+		"$(IDF_PYTHON)" "$$IDF_PATH/tools/idf.py" -B "$(BUILD_DIR)" $$port_arg $$baud_arg $(1)'
 endef
 
 define run_idf_monitor
@@ -101,7 +104,7 @@ define run_idf_monitor
 		. "$$IDF_PATH/export.sh" >/dev/null 2>&1; \
 		export PATH="$(CMAKE_BIN_DIR):$$PATH"; \
 		cd "$(ROOT_DIR)"; \
-		"$(IDF_PYTHON)" "$$IDF_PATH/tools/idf.py" -p "$$resolved_port" monitor -b $(MONITOR_BAUD)'
+		"$(IDF_PYTHON)" "$$IDF_PATH/tools/idf.py" -B "$(BUILD_DIR)" -p "$$resolved_port" monitor -b $(MONITOR_BAUD)'
 endef
 
 define run_plain_monitor
@@ -164,9 +167,9 @@ define run_esptool_flash
 		export PATH="$(CMAKE_BIN_DIR):$$PATH"; \
 		test -f "$$IDF_PATH/export.sh" || { echo "missing ESP-IDF at $$IDF_PATH; run make dev-init"; exit 1; }; \
 		test -x "$(IDF_PYTHON)" || { echo "missing ESP-IDF python at $(IDF_PYTHON); run make dev-init"; exit 1; }; \
-		test -f "$(ROOT_DIR)/build/flash_args" || { echo "missing build/flash_args; run make build first"; exit 1; }; \
+		test -f "$(BUILD_DIR)/flash_args" || { echo "missing $(BUILD_DIR)/flash_args; run make build first"; exit 1; }; \
 		. "$$IDF_PATH/export.sh" >/dev/null 2>&1; \
-		cd "$(ROOT_DIR)/build"; \
+		cd "$(BUILD_DIR)"; \
 		"$(IDF_PYTHON)" "$$IDF_PATH/components/esptool_py/esptool/esptool.py" \
 			--chip esp32 \
 			-p "$$resolved_port" \
@@ -221,9 +224,9 @@ define run_esptool_merge
 		export PATH="$(CMAKE_BIN_DIR):$$PATH"; \
 		test -f "$$IDF_PATH/export.sh" || { echo "missing ESP-IDF at $$IDF_PATH; run make dev-init"; exit 1; }; \
 		test -x "$(IDF_PYTHON)" || { echo "missing ESP-IDF python at $(IDF_PYTHON); run make dev-init"; exit 1; }; \
-		test -f "$(ROOT_DIR)/build/bootloader/bootloader.bin" || { echo "missing bootloader binary; run make build first"; exit 1; }; \
-		test -f "$(ROOT_DIR)/build/partition_table/partition-table.bin" || { echo "missing partition table binary; run make build first"; exit 1; }; \
-		test -f "$(ROOT_DIR)/build/ddc_matter_display_controller.bin" || { echo "missing app binary; run make build first"; exit 1; }; \
+		test -f "$(BUILD_DIR)/bootloader/bootloader.bin" || { echo "missing bootloader binary; run make build first"; exit 1; }; \
+		test -f "$(BUILD_DIR)/partition_table/partition-table.bin" || { echo "missing partition table binary; run make build first"; exit 1; }; \
+		test -f "$(BUILD_DIR)/ddc_matter_display_controller.bin" || { echo "missing app binary; run make build first"; exit 1; }; \
 		. "$$IDF_PATH/export.sh" >/dev/null 2>&1; \
 		"$(IDF_PYTHON)" "$$IDF_PATH/components/esptool_py/esptool/esptool.py" \
 			--chip esp32 \
@@ -232,24 +235,29 @@ define run_esptool_merge
 			--flash_mode dio \
 			--flash_freq 40m \
 			--flash_size 4MB \
-			0x1000 "$(ROOT_DIR)/build/bootloader/bootloader.bin" \
-			0x8000 "$(ROOT_DIR)/build/partition_table/partition-table.bin" \
-			0x10000 "$(ROOT_DIR)/build/ddc_matter_display_controller.bin"; \
+			0x1000 "$(BUILD_DIR)/bootloader/bootloader.bin" \
+			0x8000 "$(BUILD_DIR)/partition_table/partition-table.bin" \
+			0x10000 "$(BUILD_DIR)/ddc_matter_display_controller.bin"; \
 		echo "Wrote $(MERGED_BIN)"'
 endef
 
-.PHONY: help dev-init build merged-bin reconfigure clean fullclean flash flash-safe flash-manual flash-manual-run probe probe-manual monitor monitor-idf flash-monitor flash-monitor-idf size detect-port web-installer
+.PHONY: help dev-init build build-debug merged-bin reconfigure clean clean-debug fullclean fullclean-debug flash flash-safe flash-manual flash-manual-run flash-debug flash-safe-debug probe probe-manual monitor monitor-idf flash-monitor flash-monitor-idf flash-monitor-debug size detect-port web-installer
 
 help:
 	@printf '%s\n' \
 		'Available targets:' \
 		'  make dev-init        Clone and bootstrap repo-local ESP-IDF and esp-matter dependencies' \
 		'  make build           Build the firmware image' \
+		'  make build-debug     Build the standalone serial DDC debug image in build-debug/' \
 		'  make merged-bin      Create a single merged flash image for external tools' \
 		'  make reconfigure     Re-run CMake and sdkconfig generation' \
 		'  make clean           Clean build outputs' \
+		'  make clean-debug     Clean the standalone debug build directory' \
 		'  make fullclean       Remove all generated build state' \
+		'  make fullclean-debug Remove the standalone debug build directory' \
 		'  make flash PORT=...  Flash the device using IDF defaults and FLASH_BAUD' \
+		'  make flash-debug     Build and flash the standalone serial DDC debug image' \
+		'  make flash-safe-debug Flash the debug image at 115200 baud' \
 		'  make flash-safe      Flash at 115200 baud to reduce link/reset issues' \
 		'  make flash-manual    Flash without auto-reset; put the ESP32 in bootloader mode first' \
 		'  make probe           Read chip info over serial using esptool' \
@@ -258,6 +266,7 @@ help:
 		'  make monitor-idf     Open ESP-IDF monitor (Ctrl+] exits)' \
 		'  make flash-monitor PORT=... Flash and then open monitor' \
 		'  make flash-monitor-idf PORT=... Flash and then open ESP-IDF monitor' \
+		'  make flash-monitor-debug Flash the debug image and then open the plain serial monitor' \
 		'  make detect-port     Print the auto-detected serial port' \
 		'  make size            Show binary size report' \
 		'  make web-installer   Stage the GitHub Pages web flasher locally' \
@@ -276,6 +285,9 @@ dev-init:
 build:
 	$(call run_idf,build $(IDF_BUILD_ARGS))
 
+build-debug:
+	$(MAKE) build BUILD_DIR=$(DEBUG_BUILD_DIR) IDF_BUILD_ARGS='$(strip $(IDF_BUILD_ARGS) $(DEBUG_BUILD_FLAG))'
+
 merged-bin:
 	$(call run_esptool_merge)
 
@@ -285,14 +297,26 @@ reconfigure:
 clean:
 	$(call run_idf,clean)
 
+clean-debug:
+	$(MAKE) clean BUILD_DIR=$(DEBUG_BUILD_DIR) IDF_BUILD_ARGS='$(strip $(DEBUG_BUILD_FLAG))'
+
 fullclean:
 	$(call run_idf,fullclean)
+
+fullclean-debug:
+	@rm -rf "$(DEBUG_BUILD_DIR)"
 
 flash:
 	$(call run_idf,flash,needs-port)
 
+flash-debug:
+	$(MAKE) flash BUILD_DIR=$(DEBUG_BUILD_DIR) IDF_BUILD_ARGS='$(strip $(IDF_BUILD_ARGS) $(DEBUG_BUILD_FLAG))' PORT=$(PORT) FLASH_BAUD=$(FLASH_BAUD) FLASH_BEFORE=$(FLASH_BEFORE) FLASH_AFTER=$(FLASH_AFTER)
+
 flash-safe:
 	$(MAKE) flash FLASH_BAUD=115200
+
+flash-safe-debug:
+	$(MAKE) flash-debug FLASH_BAUD=115200 BUILD_DIR=$(DEBUG_BUILD_DIR)
 
 flash-manual:
 	@printf '%s\n' \
@@ -331,6 +355,10 @@ flash-monitor:
 flash-monitor-idf:
 	$(MAKE) flash PORT=$(PORT) FLASH_BAUD=$(FLASH_BAUD) FLASH_BEFORE=$(FLASH_BEFORE) FLASH_AFTER=$(FLASH_AFTER)
 	$(MAKE) monitor-idf PORT=$(PORT) MONITOR_BAUD=$(MONITOR_BAUD)
+
+flash-monitor-debug:
+	$(MAKE) flash-debug PORT=$(PORT) FLASH_BAUD=$(FLASH_BAUD) FLASH_BEFORE=$(FLASH_BEFORE) FLASH_AFTER=$(FLASH_AFTER) BUILD_DIR=$(DEBUG_BUILD_DIR)
+	$(MAKE) monitor PORT=$(PORT) MONITOR_BAUD=$(MONITOR_BAUD)
 
 detect-port:
 	@bash -lc 'set -eo pipefail; \

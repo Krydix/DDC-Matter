@@ -18,7 +18,9 @@ extern "C" {
 static const char *TAG = "app_main";
 static constexpr uint32_t POST_COMMISSION_TASK_STACK_SIZE = 8192;
 static constexpr TickType_t INPUT_PROBE_SETTLE_DELAY = pdMS_TO_TICKS(1200);
+static constexpr TickType_t LG_INPUT_PROBE_SETTLE_DELAY = pdMS_TO_TICKS(5000);
 static constexpr size_t MAX_PROBE_INPUT_VALUES = 24;
+static constexpr uint8_t LG_INPUT_FINGERPRINT_VCP = 0xF8;
 
 typedef struct {
     ddc_bus_t ddc;
@@ -29,6 +31,9 @@ typedef struct {
     webserver_context_t web;
     bool monitor_available;
     bool post_commission_started;
+    bool last_requested_input_valid;
+    uint8_t last_requested_input_value;
+    uint8_t last_known_mode;
 } app_context_t;
 
 static void sync_runtime_state(app_context_t *app);
@@ -58,6 +63,77 @@ static bool has_input_value(const uint8_t *values, size_t count, uint16_t value)
     return false;
 }
 
+static bool monitor_uses_lg_inputs(const app_context_t *app)
+{
+    return mccs_monitor_uses_lg_inputs(app->config.monitor_name, app->config.pnp_id);
+}
+
+static TickType_t input_probe_settle_delay(const app_context_t *app)
+{
+    return monitor_uses_lg_inputs(app) ? LG_INPUT_PROBE_SETTLE_DELAY : INPUT_PROBE_SETTLE_DELAY;
+}
+
+static esp_err_t read_current_input_value(app_context_t *app, ddc_vcp_value_t *value)
+{
+    esp_err_t err = ddc_get_input_source(&app->ddc, value);
+    if (err == ESP_OK && value->present) {
+        return ESP_OK;
+    }
+
+    if (!monitor_uses_lg_inputs(app)) {
+        return err;
+    }
+
+    ddc_vcp_value_t fingerprint = {};
+    esp_err_t fingerprint_err = ddc_get_vcp(&app->ddc, LG_INPUT_FINGERPRINT_VCP, &fingerprint);
+    if (fingerprint_err != ESP_OK || !fingerprint.present) {
+        return err;
+    }
+
+    uint8_t fingerprint_value = static_cast<uint8_t>(fingerprint.current_value & 0xff);
+    uint8_t matched_mode = 0;
+    uint8_t matched_value = 0;
+    size_t matched_count = 0;
+
+    for (uint8_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
+        uint8_t candidate = app->config.inputs[index].value;
+        if (!mccs_input_matches_lg_fingerprint(candidate, fingerprint_value)) {
+            continue;
+        }
+
+        matched_mode = index;
+        matched_value = candidate;
+        ++matched_count;
+    }
+
+    if (matched_count == 1) {
+        std::memset(value, 0, sizeof(*value));
+        value->present = true;
+        value->current_value = matched_value;
+        value->maximum_value = 0xff;
+        app->last_requested_input_valid = true;
+        app->last_requested_input_value = matched_value;
+        app->last_known_mode = matched_mode;
+        ESP_LOGI(TAG, "LG input fingerprint 0x%02X resolved uniquely to 0x%02X", fingerprint_value, matched_value);
+        return ESP_OK;
+    }
+
+    if (app->last_requested_input_valid &&
+        mccs_input_matches_lg_fingerprint(app->last_requested_input_value, fingerprint_value)) {
+        std::memset(value, 0, sizeof(*value));
+        value->present = true;
+        value->current_value = app->last_requested_input_value;
+        value->maximum_value = 0xff;
+        ESP_LOGI(TAG, "LG input fingerprint 0x%02X fell back to last requested 0x%02X", fingerprint_value,
+                 app->last_requested_input_value);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "LG input fingerprint 0x%02X was ambiguous across %u configured inputs", fingerprint_value,
+             (unsigned int)matched_count);
+    return err != ESP_OK ? err : ESP_ERR_NOT_SUPPORTED;
+}
+
 static void apply_discovered_inputs(display_config_t *config, const uint8_t *values, size_t count)
 {
     input_slot_t slots[INPUT_SLOT_COUNT] = {};
@@ -79,18 +155,6 @@ static void apply_discovered_inputs(display_config_t *config, const uint8_t *val
     }
 
     copy_inputs_from_slots(config, slots);
-}
-
-static uint8_t find_mode_for_input(const display_config_t *config, uint16_t value)
-{
-    uint8_t mode = 0;
-    for (uint8_t i = 0; i < INPUT_SLOT_COUNT; ++i) {
-        if (config->inputs[i].value == value) {
-            mode = i;
-            break;
-        }
-    }
-    return mode;
 }
 
 static bool try_find_mode_for_input(const display_config_t *config, uint16_t value, uint8_t *mode)
@@ -213,7 +277,17 @@ static esp_err_t detect_monitor(app_context_t *app, bool force_remote_refresh)
 
 static esp_err_t set_input_value(app_context_t *app, uint8_t input_value)
 {
-    return ddc_set_input_source(&app->ddc, input_value);
+    esp_err_t err = ddc_set_input_source(&app->ddc, input_value);
+    if (err == ESP_OK) {
+        app->last_requested_input_valid = true;
+        app->last_requested_input_value = input_value;
+
+        uint8_t mode = 0;
+        if (try_find_mode_for_input(&app->config, input_value, &mode)) {
+            app->last_known_mode = mode;
+        }
+    }
+    return err;
 }
 
 static esp_err_t get_level_value(app_context_t *app, bool contrast, uint8_t vcp, ddc_vcp_value_t *value)
@@ -243,7 +317,7 @@ static esp_err_t get_input_source_state(app_context_t *app, web_input_source_sta
         std::memset(&state->alternate, 0, sizeof(state->alternate));
     }
 
-    esp_err_t resolved_err = ddc_get_input_source(&app->ddc, &state->resolved);
+    esp_err_t resolved_err = read_current_input_value(app, &state->resolved);
     if (resolved_err != ESP_OK) {
         std::memset(&state->resolved, 0, sizeof(state->resolved));
     } else if (state->resolved.present) {
@@ -313,17 +387,32 @@ static esp_err_t probe_inputs_cb(void *ctx)
     ddc_vcp_value_t original = {};
     size_t candidate_count = 0;
     size_t discovered_count = 0;
+    TickType_t settle_delay = input_probe_settle_delay(app);
+    uint8_t restore_value = 0;
+    bool restore_value_valid = false;
 
     if (!app->monitor_available) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_RETURN_ON_ERROR(ddc_get_input_source(&app->ddc, &original), TAG, "current input readback unavailable");
-    if (!original.present) {
-        return ESP_ERR_NOT_SUPPORTED;
+    if (read_current_input_value(app, &original) == ESP_OK && original.present) {
+        restore_value = static_cast<uint8_t>(original.current_value & 0xff);
+        restore_value_valid = true;
+        discovered[discovered_count++] = restore_value;
+    } else if (app->last_requested_input_valid) {
+        restore_value = app->last_requested_input_value;
+        restore_value_valid = true;
+        discovered[discovered_count++] = restore_value;
+        ESP_LOGW(TAG, "using last requested input 0x%02X as probe restore target", restore_value);
+    } else {
+        restore_value = app->config.inputs[app->last_known_mode].value;
+        restore_value_valid = true;
+        discovered[discovered_count++] = restore_value;
+        ESP_LOGW(TAG, "live input readback unavailable; falling back to slot %u value 0x%02X for restore",
+                 (unsigned int)app->last_known_mode, restore_value);
     }
 
-    discovered[discovered_count++] = static_cast<uint8_t>(original.current_value & 0xff);
+    ESP_RETURN_ON_FALSE(restore_value_valid, ESP_ERR_NOT_SUPPORTED, TAG, "no restore input available");
     candidate_count = mccs_get_probe_input_values(app->config.monitor_name, app->config.pnp_id, candidates,
                                                   sizeof(candidates) / sizeof(candidates[0]));
     ESP_RETURN_ON_FALSE(candidate_count > 0, ESP_ERR_NOT_FOUND, TAG, "no probe candidates");
@@ -338,10 +427,17 @@ static esp_err_t probe_inputs_cb(void *ctx)
             continue;
         }
 
-        vTaskDelay(INPUT_PROBE_SETTLE_DELAY);
-        if (ddc_get_input_source(&app->ddc, &resolved) != ESP_OK || !resolved.present) {
-            ESP_LOGW(TAG, "input probe readback failed after 0x%02X", requested);
-            continue;
+        vTaskDelay(settle_delay);
+        if (read_current_input_value(app, &resolved) != ESP_OK || !resolved.present) {
+            if (!monitor_uses_lg_inputs(app)) {
+                ESP_LOGW(TAG, "input probe readback failed after 0x%02X", requested);
+                continue;
+            }
+
+            resolved.present = true;
+            resolved.current_value = requested;
+            resolved.maximum_value = 0xff;
+            ESP_LOGW(TAG, "LG input probe falling back to requested value 0x%02X after unreadable readback", requested);
         }
 
         uint8_t canonical = static_cast<uint8_t>(resolved.current_value & 0xff);
@@ -351,8 +447,8 @@ static esp_err_t probe_inputs_cb(void *ctx)
         }
     }
 
-    if (set_input_value(app, static_cast<uint8_t>(original.current_value & 0xff)) == ESP_OK) {
-        vTaskDelay(INPUT_PROBE_SETTLE_DELAY);
+    if (set_input_value(app, restore_value) == ESP_OK) {
+        vTaskDelay(settle_delay);
     }
 
     apply_discovered_inputs(&app->config, discovered, discovered_count);
@@ -415,7 +511,7 @@ static esp_err_t get_input_source_state_cb(web_input_source_state_t *state, void
  * so I2C is not driven from the Matter event-loop task. */
 static void sync_runtime_state(app_context_t *app)
 {
-    uint8_t current_mode = 0;
+    uint8_t current_mode = app->last_known_mode;
     if (app->monitor_available) {
         ddc_vcp_value_t brightness = {};
         if (ddc_get_vcp(&app->ddc, app->config.brightness_vcp, &brightness) == ESP_OK && brightness.present) {
@@ -426,8 +522,14 @@ static void sync_runtime_state(app_context_t *app)
             matter_update_level(app->matter.contrast_endpoint_id, static_cast<uint8_t>(contrast.current_value));
         }
         ddc_vcp_value_t input = {};
-        if (ddc_get_input_source(&app->ddc, &input) == ESP_OK && input.present) {
-            current_mode = find_mode_for_input(&app->config, input.current_value);
+        if (read_current_input_value(app, &input) == ESP_OK && input.present) {
+            uint8_t matched_mode = 0;
+            if (try_find_mode_for_input(&app->config, input.current_value, &matched_mode)) {
+                current_mode = matched_mode;
+                app->last_known_mode = matched_mode;
+            }
+            app->last_requested_input_valid = true;
+            app->last_requested_input_value = static_cast<uint8_t>(input.current_value & 0xff);
         }
     } else {
         ESP_LOGI(TAG, "skipping initial DDC polling because no monitor is connected");
