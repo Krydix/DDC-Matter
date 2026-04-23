@@ -158,7 +158,8 @@ REST API:
 | `GET` | `/api/detect` | Re-run the full detection chain |
 | `POST` | `/api/matter/open-commissioning-window` | Re-open a temporary Matter commissioning window for Apple Home or another controller |
 
-There is no separate `.local` hostname for the web UI anymore. The previous `display-switcher.local` mDNS advertisement was removed so the web UI does not interfere with Matter commissioning.
+The web UI is also published on the local network at `http://display-switcher.local/`.
+To avoid mDNS conflicts with Matter, the firmware uses ESP-IDF's shared `mdns` backend for both Matter DNS-SD and the `_http._tcp` web UI advertisement instead of running CHIP `MinimalMdns` alongside a second responder.
 
 ## Matter Discovery
 
@@ -167,10 +168,9 @@ The firmware uses Matter's normal discovery transports:
 - BLE advertisement during the initial commissioning flow
 - `_matterc._udp` DNS-SD advertisement while the device is commissionable on the local network
 - `_matter._tcp` DNS-SD advertisement after the device has been commissioned onto a fabric
+- `display-switcher.local` and `_http._tcp` for the built-in config UI, published through the same ESP-IDF `mdns` responder that Matter uses in this repo
 
 Once the device is already commissioned, it will not appear as a fresh accessory in Apple Home until a new commissioning window is opened. The web UI exposes an action for that multi-admin flow.
-
-The config UI is not published as its own mDNS HTTP service. Use the device IP address for the web UI.
 
 ---
 
@@ -218,6 +218,7 @@ QR payload:        MT:Y.K9042C00KA0648G00
 In Apple Home, use Add Accessory, then More Options if the device does not appear immediately in the first scan list. The device advertises over BLE for initial commissioning, then uses Matter DNS-SD (`_matterc._udp` before pairing and `_matter._tcp` after pairing).
 
 To keep commissioning isolated from the rest of the application, monitor detection, DDC polling, and the web UI now start only after the device has completed Matter commissioning or on later boots when it is already commissioned.
+This build switches Matter off CHIP `MinimalMdns` (`CONFIG_USE_MINIMAL_MDNS=n`) so Matter DNS-SD and `display-switcher.local` share the same ESP-IDF `mdns` responder.
 
 ### Standalone Debug Image
 

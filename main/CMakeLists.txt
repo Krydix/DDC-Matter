@@ -20,6 +20,8 @@ else()
         "webserver.c")
     list(APPEND app_requires
         esp_matter
+        esp_event
+        esp_netif
         mdns
         nvs_flash
         esp_http_client
