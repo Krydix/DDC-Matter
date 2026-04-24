@@ -8,6 +8,12 @@
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <app-common/zap-generated/ids/Clusters.h>
 #include <app/server/Server.h>
+#if __has_include(<platform/AttributeList.h>)
+#include <platform/AttributeList.h>
+#define DDC_MATTER_HAS_CHIP_ATTRIBUTE_LIST 1
+#else
+#define DDC_MATTER_HAS_CHIP_ATTRIBUTE_LIST 0
+#endif
 #include <platform/DeviceInfoProvider.h>
 #include <platform/PlatformManager.h>
 #include <platform/CHIPDeviceEvent.h>
@@ -355,10 +361,22 @@ static esp_err_t seed_user_label(uint16_t endpoint_id, const char *value)
     user_label.label = chip::CharSpan::fromCharString(kLabelKey);
     user_label.value = chip::CharSpan::fromCharString(value);
 
+#if DDC_MATTER_HAS_CHIP_ATTRIBUTE_LIST
+    ::chip::DeviceLayer::AttributeList<chip::DeviceLayer::DeviceInfoProvider::UserLabelType,
+                                       chip::DeviceLayer::kMaxUserLabelListLength>
+        user_labels = {};
+    CHIP_ERROR err = user_labels.add(user_label);
+    VerifyOrReturnValue(err == CHIP_NO_ERROR, ESP_FAIL,
+                        ESP_LOGE(TAG, "Failed to prepare User Label for endpoint %u: %" CHIP_ERROR_FORMAT, endpoint_id,
+                                 err.Format()));
+
+    err = provider->SetUserLabelList(endpoint_id, user_labels);
+#else
     std::array<chip::DeviceLayer::DeviceInfoProvider::UserLabelType, 1> user_labels = { user_label };
 
-    CHIP_ERROR err = provider->SetUserLabelList(endpoint_id, chip::Span<const chip::DeviceLayer::DeviceInfoProvider::UserLabelType>(
-                                                                 user_labels.data(), user_labels.size()));
+    CHIP_ERROR err = provider->SetUserLabelList(
+        endpoint_id, chip::Span<const chip::DeviceLayer::DeviceInfoProvider::UserLabelType>(user_labels.data(), user_labels.size()));
+#endif
     VerifyOrReturnValue(err == CHIP_NO_ERROR, ESP_FAIL,
                         ESP_LOGE(TAG, "Failed to seed User Label for endpoint %u: %" CHIP_ERROR_FORMAT, endpoint_id,
                                  err.Format()));

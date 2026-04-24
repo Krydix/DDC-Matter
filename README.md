@@ -21,11 +21,20 @@ It uses **DDC/CI over I²C** to read the monitor's EDID, query and set VCP codes
 ---
 # Installation
 
-Installing can be done entirely trough this [Github Pages Website](https://krydix.github.io/DDC-Matter/). Supported Browsers are Google Chrome or Edge
+Installing on the ESP can be done entirely trough this [Github Pages Website](https://krydix.github.io/DDC-Matter/) no code cloning needed. Supported Browsers are Google Chrome or Edge
 
 ## Pairing Code
 
+To pair the accessory with your Smart Home, use this Matter code once the firmware is flashed onto the ESP
 ![Pairing Code](https://docs.espressif.com/projects/esp-matter/en/latest/esp32/_images/matter_qrcode_20202021_3840.png)
+
+## Setup
+
+After the ESP is paired with Matter, the configuration site is available under [display-switcher.local](http://display-switcher.local)
+
+There, the different inputs and Hex Values can be set and testet, Auto-Probe Input will try to do that for you by testing all the different known values display manufacturer uses.
+
+Inputs that do not need to be exposed to Matter can be disabled here as well.
 
 ## LG-Specific Behavior
 
