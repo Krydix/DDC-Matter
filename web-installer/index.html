@@ -254,6 +254,91 @@
   </main>
 
   <script>
+    const MATTER_PAIRING_CODE = '20202021';
+    const MATTER_PAIRING_QR_URL = 'https://docs.espressif.com/projects/esp-matter/en/latest/esp32/_images/matter_qrcode_20202021_3840.png';
+
+    function decorateSuccessDialog(dialog) {
+      if (dialog.getAttribute('state') !== 'INSTALL' || !dialog.shadowRoot) {
+        return;
+      }
+
+      const message = dialog.shadowRoot.querySelector('ewt-page-message[slot="content"]');
+      const actions = dialog.shadowRoot.querySelector('div[slot="actions"]');
+
+      if (!message || !actions || message.label !== 'Installation complete!') {
+        return;
+      }
+
+      message.icon = '';
+
+      if (message.shadowRoot) {
+        const icon = message.shadowRoot.querySelector('.icon');
+
+        if (icon) {
+          icon.style.display = 'none';
+        }
+      }
+
+      let pairingCard = dialog.shadowRoot.getElementById('matter-pairing-card');
+
+      if (!pairingCard) {
+        pairingCard = document.createElement('div');
+        pairingCard.id = 'matter-pairing-card';
+        pairingCard.slot = 'content';
+        pairingCard.innerHTML = `
+          <div style="margin-top:20px;border:1px solid rgba(24,33,28,0.12);border-radius:20px;padding:18px;background:rgba(13,107,83,0.06);text-align:center;">
+            <p style="margin:0 0 12px;color:#18211c;font-weight:700;">Pair your device in your Matter controller now.</p>
+            <img
+              src="${MATTER_PAIRING_QR_URL}"
+              alt="Matter pairing QR code"
+              style="display:block;width:min(100%,220px);margin:0 auto 14px;border-radius:16px;background:#fff;padding:10px;"
+            >
+            <p style="margin:0 0 6px;color:#5a655e;">Standard setup code</p>
+            <div style="display:inline-block;padding:8px 14px;border-radius:999px;background:#18211c;color:#f8f6f0;font:700 1.1rem/1.2 'SFMono-Regular','JetBrains Mono',monospace;letter-spacing:0.08em;">
+              ${MATTER_PAIRING_CODE}
+            </div>
+          </div>
+        `;
+        actions.before(pairingCard);
+      }
+    }
+
+    function watchInstallDialog(dialog) {
+      if (!dialog.shadowRoot || dialog.dataset.pairingObserverAttached === 'true') {
+        decorateSuccessDialog(dialog);
+        return;
+      }
+
+      dialog.dataset.pairingObserverAttached = 'true';
+
+      const observer = new MutationObserver(() => {
+        decorateSuccessDialog(dialog);
+      });
+
+      observer.observe(dialog.shadowRoot, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+      });
+
+      decorateSuccessDialog(dialog);
+    }
+
+    const installDialogObserver = new MutationObserver(() => {
+      document.querySelectorAll('ewt-install-dialog').forEach((dialog) => {
+        watchInstallDialog(dialog);
+      });
+    });
+
+    installDialogObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    document.querySelectorAll('ewt-install-dialog').forEach((dialog) => {
+      watchInstallDialog(dialog);
+    });
+
     fetch('./build-info.json')
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('build-info unavailable')))
       .then((info) => {

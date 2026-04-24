@@ -19,6 +19,9 @@ It uses **DDC/CI over I²C** to read the monitor's EDID, query and set VCP codes
 | **NVS persistence** | User config and cached monitor profiles survive reboots |
 
 ---
+# Installation
+
+Installing can be done entirely trough this [Github Pages Website](https://krydix.github.io/DDC-Matter/). Supported Browsers are Google Chrome or Edge
 
 ## Pairing Code
 

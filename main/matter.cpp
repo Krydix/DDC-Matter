@@ -352,18 +352,13 @@ static esp_err_t seed_user_label(uint16_t endpoint_id, const char *value)
     VerifyOrReturnValue(provider != nullptr, ESP_FAIL, ESP_LOGE(TAG, "DeviceInfoProvider is not available"));
 
     chip::DeviceLayer::DeviceInfoProvider::UserLabelType user_label = {};
-    chip::DeviceLayer::AttributeList<chip::DeviceLayer::DeviceInfoProvider::UserLabelType,
-                                     chip::DeviceLayer::kMaxUserLabelListLength>
-        user_labels = {};
     user_label.label = chip::CharSpan::fromCharString(kLabelKey);
     user_label.value = chip::CharSpan::fromCharString(value);
 
-    CHIP_ERROR err = user_labels.add(user_label);
-    VerifyOrReturnValue(err == CHIP_NO_ERROR, ESP_FAIL,
-                        ESP_LOGE(TAG, "Failed to prepare User Label for endpoint %u: %" CHIP_ERROR_FORMAT, endpoint_id,
-                                 err.Format()));
+    std::array<chip::DeviceLayer::DeviceInfoProvider::UserLabelType, 1> user_labels = { user_label };
 
-    err = provider->SetUserLabelList(endpoint_id, user_labels);
+    CHIP_ERROR err = provider->SetUserLabelList(endpoint_id, chip::Span<const chip::DeviceLayer::DeviceInfoProvider::UserLabelType>(
+                                                                 user_labels.data(), user_labels.size()));
     VerifyOrReturnValue(err == CHIP_NO_ERROR, ESP_FAIL,
                         ESP_LOGE(TAG, "Failed to seed User Label for endpoint %u: %" CHIP_ERROR_FORMAT, endpoint_id,
                                  err.Format()));
@@ -373,14 +368,18 @@ static esp_err_t seed_user_label(uint16_t endpoint_id, const char *value)
 static esp_err_t sync_root_basic_information_metadata(const char *name)
 {
     esp_matter_attr_val_t product_name_val = esp_matter_char_str(const_cast<char *>(name), strlen(name));
-    ESP_RETURN_ON_ERROR(attribute::update(kRootEndpointId, BasicInformation::Id,
-                                          BasicInformation::Attributes::ProductName::Id, &product_name_val),
-                        TAG, "root product name update failed");
+    esp_err_t err = attribute::update(kRootEndpointId, BasicInformation::Id,
+                                      BasicInformation::Attributes::ProductName::Id, &product_name_val);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "root product name update skipped: %s", esp_err_to_name(err));
+    }
 
     esp_matter_attr_val_t product_label_val = esp_matter_char_str(const_cast<char *>(name), strlen(name));
-    ESP_RETURN_ON_ERROR(attribute::update(kRootEndpointId, BasicInformation::Id,
-                                          BasicInformation::Attributes::ProductLabel::Id, &product_label_val),
-                        TAG, "root product label update failed");
+    err = attribute::update(kRootEndpointId, BasicInformation::Id,
+                            BasicInformation::Attributes::ProductLabel::Id, &product_label_val);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "root product label update skipped: %s", esp_err_to_name(err));
+    }
     return ESP_OK;
 }
 

@@ -2,6 +2,8 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 -include $(ROOT_DIR)/.env.mk
 
+BUILD_DIR ?= $(ROOT_DIR)/build
+DEBUG_BUILD_DIR ?= $(ROOT_DIR)/build-debug
 DEPS_DIR ?= $(ROOT_DIR)/.deps
 DEFAULT_IDF_PATH := $(firstword $(wildcard $(ROOT_DIR)/.deps/esp-idf $(HOME)/esp/esp-idf))
 DEFAULT_ESP_MATTER_PATH := $(firstword $(wildcard $(ROOT_DIR)/.deps/esp-matter $(HOME)/esp/esp-matter))
@@ -11,7 +13,15 @@ PYTHON ?= python3
 PY_USER_BASE ?= $(shell $(PYTHON) -m site --user-base 2>/dev/null)
 DEFAULT_CMAKE_BIN_DIR := $(firstword $(wildcard $(HOME)/Library/Python/*/bin $(HOME)/.local/bin))
 CMAKE_BIN_DIR ?= $(if $(DEFAULT_CMAKE_BIN_DIR),$(DEFAULT_CMAKE_BIN_DIR),$(PY_USER_BASE)/bin)
-IDF_PYTHON_ENV_PATH ?= $(firstword $(sort $(wildcard $(HOME)/.espressif/python_env/idf5.4*_env)))
+IDF_PYTHON_ENV_PATH ?= $(firstword $(wildcard \
+	$(HOME)/.espressif/python_env/idf5.4_py3.1[5-9]_env \
+	$(HOME)/.espressif/python_env/idf5.4_py3.14_env \
+	$(HOME)/.espressif/python_env/idf5.4_py3.13_env \
+	$(HOME)/.espressif/python_env/idf5.4_py3.12_env \
+	$(HOME)/.espressif/python_env/idf5.4_py3.11_env \
+	$(HOME)/.espressif/python_env/idf5.4_py3.10_env \
+	$(HOME)/.espressif/python_env/idf5.4_py3.[0-9]_env \
+	$(HOME)/.espressif/python_env/idf5.4*_env))
 IDF_PYTHON ?= $(IDF_PYTHON_ENV_PATH)/bin/python
 PORT ?=
 IDF_BUILD_ARGS ?=
@@ -21,8 +31,6 @@ FLASH_BAUD ?= 460800
 MONITOR_BAUD ?= 115200
 FLASH_BEFORE ?= default_reset
 FLASH_AFTER ?= hard_reset
-BUILD_DIR ?= $(ROOT_DIR)/build
-DEBUG_BUILD_DIR ?= $(ROOT_DIR)/build-debug
 DEBUG_BUILD_FLAG := -D DDC_STANDALONE_DEBUG=ON
 DEFAULT_NVS_OFFSET := $(shell awk -F, '$$1=="nvs"{gsub(/[[:space:]]/, "", $$4); print $$4}' "$(ROOT_DIR)/partitions.csv")
 DEFAULT_NVS_SIZE := $(shell awk -F, '$$1=="nvs"{gsub(/[[:space:]]/, "", $$5); print $$5}' "$(ROOT_DIR)/partitions.csv")
