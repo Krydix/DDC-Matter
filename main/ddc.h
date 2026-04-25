@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 
@@ -18,6 +20,7 @@ typedef struct {
     i2c_master_bus_handle_t bus;
     i2c_master_dev_handle_t edid_dev;
     i2c_master_dev_handle_t ddc_dev;
+    SemaphoreHandle_t lock;
 } ddc_bus_t;
 
 typedef struct {

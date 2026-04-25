@@ -7,6 +7,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "ddc";
@@ -17,8 +18,10 @@ static const uint8_t kStandardInputVcp = 0x60;
 static const uint8_t kAlternateInputVcp = 0xF4;
 static const TickType_t kGetVcpResponseDelay = pdMS_TO_TICKS(200);
 
-static esp_err_t ddc_set_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value);
-static esp_err_t ddc_get_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value);
+static esp_err_t ddc_set_vcp_target_locked(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value);
+static esp_err_t ddc_get_vcp_target_locked(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value);
+static esp_err_t ddc_lock_bus(ddc_bus_t *bus);
+static void ddc_unlock_bus(ddc_bus_t *bus);
 
 static bool parse_vcp_response(const uint8_t *response, size_t response_len, uint8_t vcp_code, ddc_vcp_value_t *value,
                                bool *unsupported)
@@ -75,8 +78,27 @@ bool ddc_input_source_value_is_usable(uint8_t vcp_code, const ddc_vcp_value_t *v
     return true;
 }
 
+static esp_err_t ddc_lock_bus(ddc_bus_t *bus)
+{
+    if (bus == NULL || bus->lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return xSemaphoreTake(bus->lock, portMAX_DELAY) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+static void ddc_unlock_bus(ddc_bus_t *bus)
+{
+    if (bus != NULL && bus->lock != NULL) {
+        xSemaphoreGive(bus->lock);
+    }
+}
+
 esp_err_t ddc_init(ddc_bus_t *bus, int sda_gpio, int scl_gpio, uint32_t speed_hz)
 {
+    memset(bus, 0, sizeof(*bus));
+    bus->lock = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(bus->lock != NULL, ESP_ERR_NO_MEM, TAG, "create lock failed");
+
     i2c_master_bus_config_t bus_cfg = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .i2c_port = I2C_NUM_0,
@@ -106,20 +128,26 @@ esp_err_t ddc_init(ddc_bus_t *bus, int sda_gpio, int scl_gpio, uint32_t speed_hz
 esp_err_t ddc_read_edid(ddc_bus_t *bus, uint8_t *buffer, size_t len)
 {
     const uint8_t offset = 0x00;
-    return i2c_master_transmit_receive(bus->edid_dev, &offset, sizeof(offset), buffer, len, 1000);
+    ESP_RETURN_ON_ERROR(ddc_lock_bus(bus), TAG, "lock failed");
+    esp_err_t err = i2c_master_transmit_receive(bus->edid_dev, &offset, sizeof(offset), buffer, len, 1000);
+    ddc_unlock_bus(bus);
+    return err;
 }
 
 esp_err_t ddc_set_vcp(ddc_bus_t *bus, uint8_t vcp_code, uint16_t value)
 {
-    return ddc_set_vcp_target(bus, kStandardDdcDest, vcp_code, value);
+    return ddc_set_vcp_for_destination(bus, kStandardDdcDest, vcp_code, value);
 }
 
 esp_err_t ddc_set_vcp_for_destination(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value)
 {
-    return ddc_set_vcp_target(bus, ddc_dest, vcp_code, value);
+    ESP_RETURN_ON_ERROR(ddc_lock_bus(bus), TAG, "lock failed");
+    esp_err_t err = ddc_set_vcp_target_locked(bus, ddc_dest, vcp_code, value);
+    ddc_unlock_bus(bus);
+    return err;
 }
 
-static esp_err_t ddc_set_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value)
+static esp_err_t ddc_set_vcp_target_locked(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value)
 {
     uint8_t packet[7] = {
         ddc_dest,
@@ -136,15 +164,18 @@ static esp_err_t ddc_set_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vc
 
 esp_err_t ddc_get_vcp(ddc_bus_t *bus, uint8_t vcp_code, ddc_vcp_value_t *value)
 {
-    return ddc_get_vcp_target(bus, kStandardDdcDest, vcp_code, value);
+    return ddc_get_vcp_for_destination(bus, kStandardDdcDest, vcp_code, value);
 }
 
 esp_err_t ddc_get_vcp_for_destination(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value)
 {
-    return ddc_get_vcp_target(bus, ddc_dest, vcp_code, value);
+    ESP_RETURN_ON_ERROR(ddc_lock_bus(bus), TAG, "lock failed");
+    esp_err_t err = ddc_get_vcp_target_locked(bus, ddc_dest, vcp_code, value);
+    ddc_unlock_bus(bus);
+    return err;
 }
 
-static esp_err_t ddc_get_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value)
+static esp_err_t ddc_get_vcp_target_locked(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value)
 {
     uint8_t request[5] = {ddc_dest, 0x82, 0x01, vcp_code, 0x00};
     uint8_t response[11] = {0};
@@ -177,33 +208,38 @@ static esp_err_t ddc_get_vcp_target(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vc
 esp_err_t ddc_set_input_source(ddc_bus_t *bus, uint8_t value)
 {
     if (value >= 0x80) {
-        return ddc_set_vcp_target(bus, kAlternateDdcDest, kAlternateInputVcp, value);
+        return ddc_set_vcp_for_destination(bus, kAlternateDdcDest, kAlternateInputVcp, value);
     }
-    return ddc_set_vcp_target(bus, kStandardDdcDest, kStandardInputVcp, value);
+    return ddc_set_vcp_for_destination(bus, kStandardDdcDest, kStandardInputVcp, value);
 }
 
 esp_err_t ddc_get_input_source_standard(ddc_bus_t *bus, ddc_vcp_value_t *value)
 {
-    return ddc_get_vcp_target(bus, kStandardDdcDest, kStandardInputVcp, value);
+    return ddc_get_vcp_for_destination(bus, kStandardDdcDest, kStandardInputVcp, value);
 }
 
 esp_err_t ddc_get_input_source_alternate(ddc_bus_t *bus, ddc_vcp_value_t *value)
 {
-    return ddc_get_vcp_target(bus, kAlternateDdcDest, kAlternateInputVcp, value);
+    return ddc_get_vcp_for_destination(bus, kAlternateDdcDest, kAlternateInputVcp, value);
 }
 
 esp_err_t ddc_get_input_source(ddc_bus_t *bus, ddc_vcp_value_t *value)
 {
-    esp_err_t err = ddc_get_input_source_standard(bus, value);
+    ESP_RETURN_ON_ERROR(ddc_lock_bus(bus), TAG, "lock failed");
+
+    esp_err_t err = ddc_get_vcp_target_locked(bus, kStandardDdcDest, kStandardInputVcp, value);
     if (err == ESP_OK && ddc_input_source_value_is_usable(kStandardInputVcp, value)) {
+        ddc_unlock_bus(bus);
         return ESP_OK;
     }
 
-    err = ddc_get_input_source_alternate(bus, value);
+    err = ddc_get_vcp_target_locked(bus, kAlternateDdcDest, kAlternateInputVcp, value);
     if (err == ESP_OK && ddc_input_source_value_is_usable(kAlternateInputVcp, value)) {
+        ddc_unlock_bus(bus);
         return ESP_OK;
     }
 
+    ddc_unlock_bus(bus);
     return err;
 }
 
@@ -215,6 +251,8 @@ esp_err_t ddc_query_capabilities(ddc_bus_t *bus, char *buffer, size_t len)
 
     size_t offset = 0;
     buffer[0] = '\0';
+    ESP_RETURN_ON_ERROR(ddc_lock_bus(bus), TAG, "lock failed");
+
     while (offset < (len - 1)) {
         uint8_t request[7] = {
             0x51,
@@ -247,6 +285,8 @@ esp_err_t ddc_query_capabilities(ddc_bus_t *bus, char *buffer, size_t len)
             break;
         }
     }
+
+    ddc_unlock_bus(bus);
     return offset > 0 ? ESP_OK : ESP_FAIL;
 }
 

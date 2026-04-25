@@ -250,7 +250,14 @@
   </div>
 
   <script>
-    const state = { inputs: [], levels: {}, inputState: {}, pendingLevelValues: {} };
+    const state = {
+      inputs: [],
+      levels: {},
+      inputState: {},
+      pendingLevelValues: {},
+      pendingLevelRequest: null,
+      levelRefreshTimer: null
+    };
 
     async function fetchJson(url, options) {
       const response = await fetch(url, options);
@@ -273,6 +280,22 @@
 
     function setStatus(text) {
       document.getElementById("status").textContent = text;
+    }
+
+    function scheduleLevelsRefresh(delay = 900) {
+      if (state.levelRefreshTimer !== null) {
+        window.clearTimeout(state.levelRefreshTimer);
+      }
+
+      state.levelRefreshTimer = window.setTimeout(async () => {
+        state.levelRefreshTimer = null;
+        try {
+          await loadLevels();
+        } catch (error) {
+          console.error(error);
+          setStatus(`Unable to refresh live levels: ${error.message}`);
+        }
+      }, delay);
     }
 
     function render(config) {
@@ -318,6 +341,7 @@
         const slider = document.getElementById(`${kind}-level`);
         const meta = document.getElementById(`${kind}-level-meta`);
         const available = Boolean(level.present || level.writeOnly);
+        const busy = state.pendingLevelRequest === kind;
         const maximum = Math.max(Number(level.maximum || 100), 1);
         const pendingValue = state.pendingLevelValues[kind];
         const previousSliderValue = Number(slider.value || 0);
@@ -332,13 +356,17 @@
 
         slider.max = maximum;
         slider.value = available ? Math.max(0, Math.min(sliderValue, maximum)) : 0;
-        slider.disabled = !available;
+        slider.disabled = busy || !available;
         level.lastRequested = pendingValue ?? previousLevel.lastRequested;
 
         if (level.present) {
-          meta.textContent = `VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} range 0-${maximum}, applies on release`;
+          meta.textContent = busy
+            ? `Sending VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} command...`
+            : `VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} range 0-${maximum}, applies on release`;
         } else if (level.writeOnly) {
-          meta.textContent = `VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} read unavailable, write-only test range 0-${maximum}, applies on release`;
+          meta.textContent = busy
+            ? `Sending write-only VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} command...`
+            : `VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} read unavailable, write-only test range 0-${maximum}, applies on release`;
         } else {
           meta.textContent = `VCP 0x${Number(level.vcp || 0).toString(16).padStart(2, "0")} unavailable`;
         }
@@ -396,7 +424,8 @@
       await loadInputSource();
     }
 
-    async function saveConfig(statusText = "Saved to NVS") {
+    async function saveConfig(statusText = "Saved to NVS", options = {}) {
+      const reload = options.reload || "config";
       const inputs = state.inputs.map((input, index) => ({
         enabled: document.querySelector(`[data-kind="enabled"][data-index="${index}"]`).checked,
         value: Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value),
@@ -416,28 +445,57 @@
         body: JSON.stringify(payload)
       });
       setStatus(statusText);
-      await refreshPage();
+
+      if (reload === "full") {
+        await refreshPage();
+      } else if (reload === "levels") {
+        await loadConfig();
+        await loadLevels();
+      } else if (reload === "config") {
+        await loadConfig();
+      }
     }
 
     async function applyLevel(kind) {
+      if (state.pendingLevelRequest === kind) {
+        return;
+      }
+
       const slider = document.getElementById(`${kind}-level`);
-      state.pendingLevelValues[kind] = Number(slider.value);
-      setStatus(`Applying ${kind} ${slider.value}`);
+      const value = Number(slider.value);
+      state.pendingLevelRequest = kind;
+      state.pendingLevelValues[kind] = value;
+      renderLevels(state.levels);
+      setStatus(`Applying ${kind} ${value}`);
 
       try {
         const data = await fetchJson("/api/levels", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ kind, value: Number(slider.value), ...currentLevelOverrides() })
+          body: JSON.stringify({ kind, value, ...currentLevelOverrides() })
         });
 
-        renderLevels(data);
-        setStatus(`${kind[0].toUpperCase()}${kind.slice(1)} command sent`);
+        const current = state.levels[kind] || {};
+        state.levels = {
+          ...state.levels,
+          [kind]: {
+            ...current,
+            current: value,
+            vcp: Number(data.vcp || current.vcp || 0),
+            maximum: Number(current.maximum || 100)
+          }
+        };
+        renderLevels(state.levels);
+        setStatus(`${kind[0].toUpperCase()}${kind.slice(1)} command sent to VCP 0x${Number(data.vcp || 0).toString(16).padStart(2, "0")}`);
+        scheduleLevelsRefresh();
       } catch (error) {
         delete state.pendingLevelValues[kind];
         renderLevels(state.levels);
         setStatus(`Failed to apply ${kind}: ${error.message}`);
         throw error;
+      } finally {
+        state.pendingLevelRequest = null;
+        renderLevels(state.levels);
       }
     }
 
@@ -477,16 +535,14 @@
     document.getElementById("contrast-level").addEventListener("change", () => applyLevel("contrast").catch(console.error));
     document.getElementById("brightness-vcp").addEventListener("change", async () => {
       try {
-        await saveConfig("Saved brightness VCP to NVS");
-        await loadLevels();
+        await saveConfig("Saved brightness VCP to NVS", { reload: "levels" });
       } catch (error) {
         console.error(error);
       }
     });
     document.getElementById("contrast-vcp").addEventListener("change", async () => {
       try {
-        await saveConfig("Saved contrast VCP to NVS");
-        await loadLevels();
+        await saveConfig("Saved contrast VCP to NVS", { reload: "levels" });
       } catch (error) {
         console.error(error);
       }

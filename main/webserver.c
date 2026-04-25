@@ -12,9 +12,9 @@
 
 static const char *TAG = "webserver";
 static const size_t HTTPD_STACK_SIZE = 4096;
-static const uint16_t HTTPD_MAX_OPEN_SOCKETS = 2;
+static const uint16_t HTTPD_MAX_OPEN_SOCKETS = 4;
 static const uint16_t HTTPD_MAX_RESP_HEADERS = 4;
-static const uint16_t HTTPD_BACKLOG_CONN = 1;
+static const uint16_t HTTPD_BACKLOG_CONN = 2;
 static webserver_context_t *s_ctx;
 
 typedef struct {
@@ -328,9 +328,10 @@ static esp_err_t set_level_handler(httpd_req_t *req)
     parse_level_json(json, &request);
     bool contrast = cJSON_IsString(kind) && kind->valuestring != NULL && strcmp(kind->valuestring, "contrast") == 0;
     bool brightness = cJSON_IsString(kind) && kind->valuestring != NULL && strcmp(kind->valuestring, "brightness") == 0;
+    uint8_t requested_value = cJSON_IsNumber(value) ? (uint8_t)value->valueint : 0;
     uint8_t vcp = contrast ? request.contrast_vcp : request.brightness_vcp;
     esp_err_t err = (brightness || contrast) && cJSON_IsNumber(value) && s_ctx->set_level ?
-        s_ctx->set_level(contrast, vcp, (uint8_t)value->valueint, s_ctx->ctx) :
+        s_ctx->set_level(contrast, vcp, requested_value, s_ctx->ctx) :
         ESP_ERR_INVALID_ARG;
     cJSON_Delete(json);
 
@@ -338,10 +339,15 @@ static esp_err_t set_level_handler(httpd_req_t *req)
         return send_error(req, "500 Internal Server Error", "{\"ok\":false,\"error\":\"level write failed\"}");
     }
 
-    cJSON *response = build_levels_json(&request);
+    cJSON *response = cJSON_CreateObject();
     if (response == NULL) {
         return send_error(req, "500 Internal Server Error", "{\"ok\":false}");
     }
+
+    cJSON_AddBoolToObject(response, "ok", true);
+    cJSON_AddStringToObject(response, "kind", contrast ? "contrast" : "brightness");
+    cJSON_AddNumberToObject(response, "value", requested_value);
+    cJSON_AddNumberToObject(response, "vcp", vcp);
     err = send_json(req, response);
     cJSON_Delete(response);
     return err;

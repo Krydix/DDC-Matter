@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 extern "C" {
@@ -20,10 +21,12 @@ extern "C" {
 
 static const char *TAG = "app_main";
 static constexpr uint32_t POST_COMMISSION_TASK_STACK_SIZE = 8192;
+static constexpr uint32_t MONITOR_WRITE_TASK_STACK_SIZE = 4096;
 static constexpr TickType_t INPUT_PROBE_SETTLE_DELAY = pdMS_TO_TICKS(1200);
 static constexpr TickType_t LG_INPUT_PROBE_SETTLE_DELAY = pdMS_TO_TICKS(5000);
 static constexpr TickType_t WEB_MDNS_RETRY_DELAY = pdMS_TO_TICKS(1000);
 static constexpr size_t MAX_PROBE_INPUT_VALUES = 24;
+static constexpr size_t MONITOR_WRITE_QUEUE_LEN = 8;
 static constexpr uint8_t WEB_MDNS_MAX_RETRIES = 5;
 static constexpr uint8_t LG_INPUT_FINGERPRINT_VCP = 0xF8;
 static constexpr char kWebMdnsHostname[] = "display-switcher";
@@ -33,6 +36,17 @@ static constexpr char kWebMdnsServiceProto[] = "_tcp";
 static constexpr uint16_t kWebServerPort = 80;
 static constexpr char kWifiStaNetifKey[] = "WIFI_STA_DEF";
 static constexpr char kEthNetifKey[] = "ETH_DEF";
+
+typedef enum {
+    MONITOR_WRITE_LEVEL,
+    MONITOR_WRITE_INPUT,
+} monitor_write_kind_t;
+
+typedef struct {
+    monitor_write_kind_t kind;
+    uint16_t endpoint_id;
+    uint8_t value;
+} monitor_write_request_t;
 
 typedef struct {
     ddc_bus_t ddc;
@@ -48,10 +62,93 @@ typedef struct {
     bool last_requested_input_valid;
     uint8_t last_requested_input_value;
     uint8_t last_known_mode;
+    QueueHandle_t monitor_write_queue;
 } app_context_t;
 
 static void sync_runtime_state(app_context_t *app);
 static void schedule_web_mdns_retry(app_context_t *app);
+static esp_err_t enqueue_monitor_write(app_context_t *app, monitor_write_kind_t kind, uint16_t endpoint_id, uint8_t value);
+static uint8_t matter_level_to_ddc_value(uint8_t matter_level);
+static bool find_input_slot_for_endpoint(const matter_runtime_t *runtime, uint16_t endpoint_id, uint8_t *slot);
+static esp_err_t set_input_value(app_context_t *app, uint8_t input_value);
+
+static uint8_t level_vcp_for_endpoint(const app_context_t *app, uint16_t endpoint_id)
+{
+    return endpoint_id == app->matter.contrast_endpoint_id ? app->config.contrast_vcp : app->config.brightness_vcp;
+}
+
+static esp_err_t write_input_for_endpoint(app_context_t *app, uint16_t endpoint_id)
+{
+    uint8_t slot = 0;
+    ESP_RETURN_ON_FALSE(find_input_slot_for_endpoint(&app->matter, endpoint_id, &slot), ESP_ERR_NOT_FOUND, TAG,
+                        "input endpoint not found");
+    ESP_RETURN_ON_FALSE(slot < INPUT_SLOT_COUNT && app->config.inputs[slot].enabled, ESP_ERR_INVALID_STATE, TAG,
+                        "input slot unavailable");
+    return set_input_value(app, app->config.inputs[slot].value);
+}
+
+static void reconcile_level_after_failed_write(app_context_t *app, uint16_t endpoint_id, uint8_t vcp)
+{
+    ddc_vcp_value_t current = {};
+    if (ddc_get_vcp(&app->ddc, vcp, &current) == ESP_OK && current.present) {
+        matter_update_level(endpoint_id, static_cast<uint8_t>(current.current_value));
+    }
+}
+
+static void monitor_write_task(void *arg)
+{
+    app_context_t *app = static_cast<app_context_t *>(arg);
+    monitor_write_request_t request = {};
+
+    while (xQueueReceive(app->monitor_write_queue, &request, portMAX_DELAY) == pdTRUE) {
+        if (!app->monitor_available) {
+            ESP_LOGW(TAG, "dropping queued monitor write while monitor is unavailable");
+            continue;
+        }
+
+        if (request.kind == MONITOR_WRITE_LEVEL) {
+            uint8_t vcp = level_vcp_for_endpoint(app, request.endpoint_id);
+            esp_err_t err = ddc_set_vcp(&app->ddc, vcp, matter_level_to_ddc_value(request.value));
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "async Matter level write failed endpoint=%u: %s", request.endpoint_id, esp_err_to_name(err));
+                reconcile_level_after_failed_write(app, request.endpoint_id, vcp);
+            }
+            continue;
+        }
+
+        esp_err_t err = write_input_for_endpoint(app, request.endpoint_id);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "async Matter input write failed endpoint=%u: %s", request.endpoint_id, esp_err_to_name(err));
+            matter_update_input_state(request.endpoint_id, false);
+        }
+    }
+
+    vTaskDelete(NULL);
+}
+
+static esp_err_t start_monitor_write_task(app_context_t *app)
+{
+    app->monitor_write_queue = xQueueCreate(MONITOR_WRITE_QUEUE_LEN, sizeof(monitor_write_request_t));
+    ESP_RETURN_ON_FALSE(app->monitor_write_queue != NULL, ESP_ERR_NO_MEM, TAG, "create monitor write queue failed");
+
+    BaseType_t task_ok = xTaskCreate(monitor_write_task, "monitor_write", MONITOR_WRITE_TASK_STACK_SIZE, app, 5, NULL);
+    ESP_RETURN_ON_FALSE(task_ok == pdPASS, ESP_ERR_NO_MEM, TAG, "create monitor write task failed");
+    return ESP_OK;
+}
+
+static esp_err_t enqueue_monitor_write(app_context_t *app, monitor_write_kind_t kind, uint16_t endpoint_id, uint8_t value)
+{
+    monitor_write_request_t request = {
+        .kind = kind,
+        .endpoint_id = endpoint_id,
+        .value = value,
+    };
+
+    if (app->monitor_write_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return xQueueSend(app->monitor_write_queue, &request, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
 
 static esp_netif_t *get_primary_netif(void)
 {
@@ -531,10 +628,10 @@ static esp_err_t matter_level_write(uint16_t endpoint_id, uint8_t level, void *c
         return ESP_OK;
     }
 
-    uint8_t ddc_value = matter_level_to_ddc_value(level);
-    uint8_t vcp = (endpoint_id == app->matter.contrast_endpoint_id) ? app->config.contrast_vcp : app->config.brightness_vcp;
-    ESP_LOGI(TAG, "Matter level write endpoint=%u level=%u mapped_ddc=%u vcp=0x%02X", endpoint_id, level, ddc_value, vcp);
-    return ddc_set_vcp(&app->ddc, vcp, ddc_value);
+    uint8_t vcp = level_vcp_for_endpoint(app, endpoint_id);
+    ESP_LOGI(TAG, "queueing Matter level write endpoint=%u level=%u mapped_ddc=%u vcp=0x%02X", endpoint_id, level,
+             matter_level_to_ddc_value(level), vcp);
+    return enqueue_monitor_write(app, MONITOR_WRITE_LEVEL, endpoint_id, level);
 }
 
 static esp_err_t matter_input_write(uint16_t endpoint_id, bool on, void *ctx)
@@ -555,7 +652,7 @@ static esp_err_t matter_input_write(uint16_t endpoint_id, bool on, void *ctx)
         ESP_LOGW(TAG, "ignoring Matter input write while monitor is unavailable");
         return ESP_OK;
     }
-    return set_input_value(app, app->config.inputs[slot].value);
+    return enqueue_monitor_write(app, MONITOR_WRITE_INPUT, endpoint_id, 1);
 }
 
 static esp_err_t apply_config_cb(const display_config_t *config, void *ctx)
@@ -796,6 +893,7 @@ extern "C" void app_main(void)
 
     ESP_ERROR_CHECK(config_storage_init());
     ESP_ERROR_CHECK(ddc_init(&app.ddc, 21, 22, 100000));
+    ESP_ERROR_CHECK(start_monitor_write_task(&app));
     apply_safe_defaults(&app.config);
     preload_saved_config(&app.config);
     esp_err_t event_loop_err = esp_event_loop_create_default();
