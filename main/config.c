@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include <ctype.h>
 #include <string.h>
 
 #include "mccs.h"
@@ -9,6 +10,23 @@
 #define NVS_NAMESPACE "display_cfg"
 #define KEY_USER_CONFIG "user_cfg"
 #define KEY_CACHED_PROF "cache_prof"
+
+typedef struct {
+    uint8_t value;
+    bool enabled;
+    char name[INPUT_NAME_MAX_LEN];
+} stored_input_slot_v1_t;
+
+typedef struct {
+    char pnp_id[PNP_ID_LEN];
+    char monitor_name[MONITOR_NAME_MAX_LEN];
+    bool profile_cached;
+    bool user_override;
+    bool db_match;
+    uint8_t brightness_vcp;
+    uint8_t contrast_vcp;
+    stored_input_slot_v1_t inputs[INPUT_SLOT_COUNT];
+} stored_display_config_v1_t;
 
 typedef struct {
     uint8_t value;
@@ -26,6 +44,85 @@ typedef struct {
     legacy_input_slot_t inputs[INPUT_SLOT_COUNT];
 } legacy_display_config_t;
 
+static int hex_nibble(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+
+    ch = (char)toupper((unsigned char)ch);
+    if (ch >= 'A' && ch <= 'F') {
+        return 10 + (ch - 'A');
+    }
+
+    return -1;
+}
+
+esp_err_t config_normalize_wol_mac(const char *input, char *output, size_t output_len)
+{
+    char digits[12] = {0};
+    size_t digit_count = 0;
+
+    if (output == NULL || output_len < WOL_MAC_STR_LEN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    output[0] = '\0';
+    if (input == NULL) {
+        return ESP_OK;
+    }
+
+    for (size_t index = 0; input[index] != '\0'; ++index) {
+        unsigned char ch = (unsigned char)input[index];
+        if (isspace(ch) || ch == ':' || ch == '-') {
+            continue;
+        }
+
+        if (!isxdigit(ch) || digit_count >= sizeof(digits)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        digits[digit_count++] = (char)toupper(ch);
+    }
+
+    if (digit_count == 0) {
+        return ESP_OK;
+    }
+    if (digit_count != sizeof(digits)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (size_t index = 0; index < sizeof(digits) / 2; ++index) {
+        output[index * 3] = digits[index * 2];
+        output[index * 3 + 1] = digits[index * 2 + 1];
+        if (index + 1 < sizeof(digits) / 2) {
+            output[index * 3 + 2] = ':';
+        }
+    }
+    output[WOL_MAC_STR_LEN - 1] = '\0';
+    return ESP_OK;
+}
+
+bool config_parse_wol_mac(const char *input, uint8_t mac[6])
+{
+    char normalized[WOL_MAC_STR_LEN] = {0};
+
+    if (mac == NULL || config_normalize_wol_mac(input, normalized, sizeof(normalized)) != ESP_OK || normalized[0] == '\0') {
+        return false;
+    }
+
+    for (size_t index = 0; index < 6; ++index) {
+        int high = hex_nibble(normalized[index * 3]);
+        int low = hex_nibble(normalized[index * 3 + 1]);
+        if (high < 0 || low < 0) {
+            return false;
+        }
+        mac[index] = (uint8_t)((high << 4) | low);
+    }
+
+    return true;
+}
+
 static void normalize_config(display_config_t *config, bool legacy_format)
 {
     if (config->brightness_vcp == 0) {
@@ -38,9 +135,16 @@ static void normalize_config(display_config_t *config, bool legacy_format)
     for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
         input_slot_t *slot = &config->inputs[index];
         bool has_mapping = slot->value != 0 || slot->name[0] != '\0';
+        char normalized_mac[WOL_MAC_STR_LEN] = {0};
 
         if (legacy_format) {
             slot->enabled = has_mapping;
+        }
+
+        if (config_normalize_wol_mac(slot->wol_mac, normalized_mac, sizeof(normalized_mac)) == ESP_OK) {
+            memcpy(slot->wol_mac, normalized_mac, sizeof(slot->wol_mac));
+        } else {
+            slot->wol_mac[0] = '\0';
         }
 
         if (!has_mapping) {
@@ -150,6 +254,32 @@ esp_err_t config_load_user(display_config_t *config, bool *found)
         if (err != ESP_OK) {
             return err;
         }
+        normalize_config(config, false);
+        *found = true;
+        return ESP_OK;
+    }
+
+    if (required == sizeof(stored_display_config_v1_t)) {
+        stored_display_config_v1_t stored = {};
+        err = nvs_get_blob(handle, KEY_USER_CONFIG, &stored, &required);
+        nvs_close(handle);
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        memcpy(config->pnp_id, stored.pnp_id, sizeof(config->pnp_id));
+        memcpy(config->monitor_name, stored.monitor_name, sizeof(config->monitor_name));
+        config->profile_cached = stored.profile_cached;
+        config->user_override = stored.user_override;
+        config->db_match = stored.db_match;
+        config->brightness_vcp = stored.brightness_vcp;
+        config->contrast_vcp = stored.contrast_vcp;
+        for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
+            config->inputs[index].value = stored.inputs[index].value;
+            config->inputs[index].enabled = stored.inputs[index].enabled;
+            memcpy(config->inputs[index].name, stored.inputs[index].name, sizeof(config->inputs[index].name));
+        }
+
         normalize_config(config, false);
         *found = true;
         return ESP_OK;

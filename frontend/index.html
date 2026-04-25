@@ -185,7 +185,7 @@
         <div class="label">Inputs</div>
         <table>
           <thead>
-            <tr><th>Mode</th><th>Enabled</th><th>Hex Value</th><th>Name</th><th>Action</th></tr>
+            <tr><th>Mode</th><th>Enabled</th><th>Hex Value</th><th>Name</th><th>Wake on LAN</th><th>Action</th></tr>
           </thead>
           <tbody id="inputs-body"></tbody>
         </table>
@@ -282,6 +282,18 @@
       document.getElementById("status").textContent = text;
     }
 
+    function normalizeWakeOnLanMac(value) {
+      const digits = String(value || "")
+        .toUpperCase()
+        .replace(/[^0-9A-F]/g, "")
+        .slice(0, 12);
+      return digits.replace(/(.{2})(?=.)/g, "$1:");
+    }
+
+    function isValidWakeOnLanMac(value) {
+      return value === "" || /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(value);
+    }
+
     function scheduleLevelsRefresh(delay = 900) {
       if (state.levelRefreshTimer !== null) {
         window.clearTimeout(state.levelRefreshTimer);
@@ -319,6 +331,7 @@
           <td><input data-kind="enabled" data-index="${index}" type="checkbox" ${input.enabled !== false ? "checked" : ""}></td>
           <td><input data-kind="value" data-index="${index}" type="number" min="0" max="255" value="${input.value}"></td>
           <td><input data-kind="name" data-index="${index}" value="${input.name || ""}"></td>
+          <td><input data-kind="wolMac" data-index="${index}" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocapitalize="characters" value="${input.wakeOnLanMac || ""}"></td>
           <td><button data-test="${index}" ${input.enabled === false ? "disabled" : ""}>Test</button></td>
         `;
         body.appendChild(tr);
@@ -429,8 +442,22 @@
       const inputs = state.inputs.map((input, index) => ({
         enabled: document.querySelector(`[data-kind="enabled"][data-index="${index}"]`).checked,
         value: Number(document.querySelector(`[data-kind="value"][data-index="${index}"]`).value),
-        name: document.querySelector(`[data-kind="name"][data-index="${index}"]`).value
+        name: document.querySelector(`[data-kind="name"][data-index="${index}"]`).value,
+        wakeOnLanMac: ""
       }));
+
+      for (let index = 0; index < inputs.length; index += 1) {
+        const wolField = document.querySelector(`[data-kind="wolMac"][data-index="${index}"]`);
+        const normalizedMac = normalizeWakeOnLanMac(wolField.value);
+        wolField.value = normalizedMac;
+        if (!isValidWakeOnLanMac(normalizedMac)) {
+          wolField.setCustomValidity("Use AA:BB:CC:DD:EE:FF or leave it blank");
+          wolField.reportValidity();
+          throw new Error(`Wake-on-LAN MAC for Input ${index + 1} is invalid`);
+        }
+        wolField.setCustomValidity("");
+        inputs[index].wakeOnLanMac = normalizedMac;
+      }
 
       const payload = {
         brightnessVcp: Number(document.getElementById("brightness-vcp").value),
@@ -557,6 +584,17 @@
       } catch (error) {
         console.error(error);
       }
+    });
+    document.getElementById("inputs-body").addEventListener("input", (event) => {
+      if (!event.target.matches('[data-kind="wolMac"]')) {
+        return;
+      }
+
+      const normalizedMac = normalizeWakeOnLanMac(event.target.value);
+      event.target.value = normalizedMac;
+      event.target.setCustomValidity(isValidWakeOnLanMac(normalizedMac)
+        ? ""
+        : "Use AA:BB:CC:DD:EE:FF or leave it blank");
     });
     document.getElementById("inputs-body").addEventListener("click", async (event) => {
       const index = event.target.getAttribute("data-test");

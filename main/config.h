@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -13,12 +14,14 @@ extern "C" {
 #define MONITOR_NAME_MAX_LEN 32
 #define PNP_ID_LEN 4
 #define INPUT_NAME_MAX_LEN 24
+#define WOL_MAC_STR_LEN 18
 #define PROFILE_CAPS_MAX_LEN 256
 
 typedef struct {
     uint8_t value;
     bool enabled;
     char name[INPUT_NAME_MAX_LEN];
+    char wol_mac[WOL_MAC_STR_LEN];
 } input_slot_t;
 
 typedef struct {
@@ -53,6 +56,8 @@ esp_err_t config_save_user(const display_config_t *config);
 esp_err_t config_load_cached_profile(cached_profile_t *profile, bool *found);
 esp_err_t config_save_cached_profile(const cached_profile_t *profile);
 esp_err_t config_clear_cached_profile(void);
+esp_err_t config_normalize_wol_mac(const char *input, char *output, size_t output_len);
+bool config_parse_wol_mac(const char *input, uint8_t mac[6]);
 
 #ifdef __cplusplus
 }

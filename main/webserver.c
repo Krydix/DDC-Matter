@@ -68,6 +68,7 @@ static cJSON *build_config_json(void)
         cJSON_AddNumberToObject(item, "value", s_ctx->config->inputs[i].value);
         cJSON_AddBoolToObject(item, "enabled", s_ctx->config->inputs[i].enabled);
         cJSON_AddStringToObject(item, "name", s_ctx->config->inputs[i].name);
+        cJSON_AddStringToObject(item, "wakeOnLanMac", s_ctx->config->inputs[i].wol_mac);
         cJSON_AddItemToArray(inputs, item);
     }
     return root;
@@ -225,7 +226,7 @@ static esp_err_t get_input_source_handler(httpd_req_t *req)
 
 static esp_err_t save_config_handler(httpd_req_t *req)
 {
-    char body[1024] = {0};
+    char body[1536] = {0};
     int received = httpd_req_recv(req, body, sizeof(body) - 1);
     if (received <= 0) {
         return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"missing body\"}");
@@ -256,6 +257,7 @@ static esp_err_t save_config_handler(httpd_req_t *req)
             cJSON *value = cJSON_GetObjectItemCaseSensitive(input, "value");
             cJSON *enabled = cJSON_GetObjectItemCaseSensitive(input, "enabled");
             cJSON *name = cJSON_GetObjectItemCaseSensitive(input, "name");
+            cJSON *wake_on_lan_mac = cJSON_GetObjectItemCaseSensitive(input, "wakeOnLanMac");
             if (cJSON_IsNumber(value)) {
                 updated.inputs[i].value = (uint8_t)value->valueint;
             }
@@ -265,6 +267,15 @@ static esp_err_t save_config_handler(httpd_req_t *req)
             if (cJSON_IsString(name) && name->valuestring != NULL) {
                 strncpy(updated.inputs[i].name, name->valuestring, sizeof(updated.inputs[i].name) - 1);
                 updated.inputs[i].name[sizeof(updated.inputs[i].name) - 1] = '\0';
+            }
+            if (wake_on_lan_mac != NULL) {
+                if (!cJSON_IsString(wake_on_lan_mac) || wake_on_lan_mac->valuestring == NULL ||
+                    config_normalize_wol_mac(wake_on_lan_mac->valuestring, updated.inputs[i].wol_mac,
+                                             sizeof(updated.inputs[i].wol_mac)) != ESP_OK) {
+                    cJSON_Delete(json);
+                    return send_error(req, "400 Bad Request",
+                                      "{\"ok\":false,\"error\":\"invalid Wake-on-LAN MAC\"}");
+                }
             }
             ++i;
         }

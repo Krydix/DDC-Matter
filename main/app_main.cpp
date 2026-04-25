@@ -1,5 +1,8 @@
 #include <cstring>
 
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
+
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -71,6 +74,7 @@ static esp_err_t enqueue_monitor_write(app_context_t *app, monitor_write_kind_t 
 static uint8_t matter_level_to_ddc_value(uint8_t matter_level);
 static bool find_input_slot_for_endpoint(const matter_runtime_t *runtime, uint16_t endpoint_id, uint8_t *slot);
 static esp_err_t set_input_value(app_context_t *app, uint8_t input_value);
+static void wake_input_slot_if_configured(app_context_t *app, uint8_t slot);
 
 static uint8_t level_vcp_for_endpoint(const app_context_t *app, uint16_t endpoint_id)
 {
@@ -84,7 +88,11 @@ static esp_err_t write_input_for_endpoint(app_context_t *app, uint16_t endpoint_
                         "input endpoint not found");
     ESP_RETURN_ON_FALSE(slot < INPUT_SLOT_COUNT && app->config.inputs[slot].enabled, ESP_ERR_INVALID_STATE, TAG,
                         "input slot unavailable");
-    return set_input_value(app, app->config.inputs[slot].value);
+    esp_err_t err = set_input_value(app, app->config.inputs[slot].value);
+    if (err == ESP_OK) {
+        wake_input_slot_if_configured(app, slot);
+    }
+    return err;
 }
 
 static void reconcile_level_after_failed_write(app_context_t *app, uint16_t endpoint_id, uint8_t vcp)
@@ -181,6 +189,74 @@ static bool get_web_mdns_address(mdns_ip_addr_t *address)
     address->addr.type = ESP_IPADDR_TYPE_V4;
     address->addr.u_addr.ip4 = ip_info.ip;
     return true;
+}
+
+static bool get_wol_broadcast_address(in_addr_t *address)
+{
+    esp_netif_t *netif = get_primary_netif();
+    if (netif == nullptr) {
+        return false;
+    }
+
+    esp_netif_ip_info_t ip_info = {};
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0 || ip_info.netmask.addr == 0) {
+        return false;
+    }
+
+    *address = ip_info.ip.addr | ~ip_info.netmask.addr;
+    return true;
+}
+
+static esp_err_t send_wol_magic_packet(const char *mac)
+{
+    uint8_t mac_bytes[6] = {0};
+    uint8_t payload[6 + 16 * sizeof(mac_bytes)] = {0};
+    sockaddr_in destination = {};
+    in_addr_t broadcast_address = INADDR_BROADCAST;
+
+    ESP_RETURN_ON_FALSE(config_parse_wol_mac(mac, mac_bytes), ESP_ERR_INVALID_ARG, TAG, "invalid wol mac");
+
+    memset(payload, 0xFF, 6);
+    for (size_t repeat = 0; repeat < 16; ++repeat) {
+        memcpy(payload + 6 + repeat * sizeof(mac_bytes), mac_bytes, sizeof(mac_bytes));
+    }
+
+    if (get_wol_broadcast_address(&broadcast_address)) {
+        destination.sin_addr.s_addr = broadcast_address;
+    } else {
+        destination.sin_addr.s_addr = INADDR_BROADCAST;
+    }
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(9);
+
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    ESP_RETURN_ON_FALSE(socket_fd >= 0, ESP_FAIL, TAG, "wol socket create failed");
+
+    int broadcast_enabled = 1;
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_BROADCAST, &broadcast_enabled, sizeof(broadcast_enabled)) != 0) {
+        close(socket_fd);
+        return ESP_FAIL;
+    }
+
+    ssize_t sent = sendto(socket_fd, payload, sizeof(payload), 0, reinterpret_cast<sockaddr *>(&destination),
+                          sizeof(destination));
+    close(socket_fd);
+    return sent == (ssize_t)sizeof(payload) ? ESP_OK : ESP_FAIL;
+}
+
+static void wake_input_slot_if_configured(app_context_t *app, uint8_t slot)
+{
+    if (slot >= INPUT_SLOT_COUNT || app->config.inputs[slot].wol_mac[0] == '\0') {
+        return;
+    }
+
+    esp_err_t err = send_wol_magic_packet(app->config.inputs[slot].wol_mac);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "wake-on-lan failed for slot %u: %s", static_cast<unsigned int>(slot), esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI(TAG, "wake-on-lan sent for slot %u", static_cast<unsigned int>(slot));
 }
 
 static void disable_web_mdns_alias(void)
@@ -669,7 +745,17 @@ static esp_err_t apply_config_cb(const display_config_t *config, void *ctx)
 
 static esp_err_t test_input_cb(uint8_t value, void *ctx)
 {
-    return set_input_value(static_cast<app_context_t *>(ctx), value);
+    app_context_t *app = static_cast<app_context_t *>(ctx);
+    esp_err_t err = set_input_value(app, value);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    uint8_t slot = 0;
+    if (try_find_mode_for_input(&app->config, value, &slot)) {
+        wake_input_slot_if_configured(app, slot);
+    }
+    return ESP_OK;
 }
 
 static esp_err_t probe_inputs_cb(void *ctx)
