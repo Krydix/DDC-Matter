@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 
 #include "lwip/inet.h"
@@ -28,9 +30,9 @@ static constexpr uint32_t MONITOR_WRITE_TASK_STACK_SIZE = 4096;
 static constexpr TickType_t INPUT_PROBE_SETTLE_DELAY = pdMS_TO_TICKS(1200);
 static constexpr TickType_t LG_INPUT_PROBE_SETTLE_DELAY = pdMS_TO_TICKS(5000);
 static constexpr TickType_t WEB_MDNS_RETRY_DELAY = pdMS_TO_TICKS(1000);
+static constexpr TickType_t WEB_MDNS_MAX_RETRY_DELAY = pdMS_TO_TICKS(30000);
 static constexpr size_t MAX_PROBE_INPUT_VALUES = 24;
 static constexpr size_t MONITOR_WRITE_QUEUE_LEN = 8;
-static constexpr uint8_t WEB_MDNS_MAX_RETRIES = 5;
 static constexpr uint8_t LG_INPUT_FINGERPRINT_VCP = 0xF8;
 static constexpr char kWebMdnsHostname[] = "display-switcher";
 static constexpr char kWebMdnsInstance[] = "Display Switcher";
@@ -61,7 +63,7 @@ typedef struct {
     bool monitor_available;
     bool post_commission_started;
     bool webserver_started;
-    bool web_mdns_retry_pending;
+    std::atomic_bool web_mdns_retry_pending;
     bool last_requested_input_valid;
     uint8_t last_requested_input_value;
     uint8_t last_known_mode;
@@ -158,42 +160,80 @@ static esp_err_t enqueue_monitor_write(app_context_t *app, monitor_write_kind_t 
     return xQueueSend(app->monitor_write_queue, &request, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
+static bool netif_has_ip_address(esp_netif_t *netif)
+{
+    if (netif == nullptr) {
+        return false;
+    }
+
+    esp_netif_ip_info_t ip_info = {};
+    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+        return true;
+    }
+
+    esp_ip6_addr_t ip6 = {};
+    return esp_netif_get_ip6_linklocal(netif, &ip6) == ESP_OK;
+}
+
 static esp_netif_t *get_primary_netif(void)
 {
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey(kWifiStaNetifKey);
-    if (netif != nullptr) {
-        return netif;
+    esp_netif_t *wifi = esp_netif_get_handle_from_ifkey(kWifiStaNetifKey);
+    if (netif_has_ip_address(wifi)) {
+        return wifi;
     }
-    return esp_netif_get_handle_from_ifkey(kEthNetifKey);
+
+    esp_netif_t *ethernet = esp_netif_get_handle_from_ifkey(kEthNetifKey);
+    if (netif_has_ip_address(ethernet)) {
+        return ethernet;
+    }
+    return nullptr;
 }
 
-static bool web_mdns_uses_local_hostname(void)
+static esp_netif_t *get_ipv4_netif(void)
 {
-    char hostname[MDNS_NAME_BUF_LEN] = {};
-    return mdns_hostname_get(hostname) == ESP_OK && std::strcmp(hostname, kWebMdnsHostname) == 0;
+    const char *keys[] = {kWifiStaNetifKey, kEthNetifKey};
+    for (const char *key : keys) {
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey(key);
+        esp_netif_ip_info_t ip_info = {};
+        if (netif != nullptr && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+            return netif;
+        }
+    }
+    return nullptr;
 }
 
-static bool get_web_mdns_address(mdns_ip_addr_t *address)
+static bool get_web_mdns_addresses(mdns_ip_addr_t addresses[2])
 {
     esp_netif_t *netif = get_primary_netif();
     if (netif == nullptr) {
         return false;
     }
 
+    std::memset(addresses, 0, sizeof(mdns_ip_addr_t) * 2);
+    size_t count = 0;
     esp_netif_ip_info_t ip_info = {};
-    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0) {
-        return false;
+    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+        addresses[count].addr.type = ESP_IPADDR_TYPE_V4;
+        addresses[count].addr.u_addr.ip4 = ip_info.ip;
+        ++count;
     }
 
-    std::memset(address, 0, sizeof(*address));
-    address->addr.type = ESP_IPADDR_TYPE_V4;
-    address->addr.u_addr.ip4 = ip_info.ip;
-    return true;
+    esp_ip6_addr_t ip6 = {};
+    if (count < 2 && esp_netif_get_ip6_linklocal(netif, &ip6) == ESP_OK) {
+        addresses[count].addr.type = ESP_IPADDR_TYPE_V6;
+        addresses[count].addr.u_addr.ip6 = ip6;
+        ++count;
+    }
+
+    for (size_t index = 0; index + 1 < count; ++index) {
+        addresses[index].next = &addresses[index + 1];
+    }
+    return count > 0;
 }
 
 static bool get_wol_broadcast_address(in_addr_t *address)
 {
-    esp_netif_t *netif = get_primary_netif();
+    esp_netif_t *netif = get_ipv4_netif();
     if (netif == nullptr) {
         return false;
     }
@@ -259,57 +299,34 @@ static void wake_input_slot_if_configured(app_context_t *app, uint8_t slot)
     ESP_LOGI(TAG, "wake-on-lan sent for slot %u", static_cast<unsigned int>(slot));
 }
 
-static void disable_web_mdns_alias(void)
-{
-    const char *service_host = web_mdns_uses_local_hostname() ? nullptr : kWebMdnsHostname;
-    if (mdns_service_exists(kWebMdnsServiceType, kWebMdnsServiceProto, service_host)) {
-        esp_err_t remove_err = mdns_service_remove_for_host(NULL, kWebMdnsServiceType, kWebMdnsServiceProto,
-                                                            service_host);
-        if (remove_err != ESP_OK && remove_err != ESP_ERR_NOT_FOUND) {
-            ESP_LOGW(TAG, "failed to remove web mdns service: %s", esp_err_to_name(remove_err));
-        }
-    }
-
-    if (!web_mdns_uses_local_hostname() && mdns_hostname_exists(kWebMdnsHostname)) {
-        esp_err_t host_err = mdns_delegate_hostname_remove(kWebMdnsHostname);
-        if (host_err != ESP_OK && host_err != ESP_ERR_NOT_FOUND) {
-            ESP_LOGW(TAG, "failed to remove web mdns hostname: %s", esp_err_to_name(host_err));
-        }
-    }
-}
-
 static esp_err_t refresh_web_mdns_alias(app_context_t *app)
 {
     if (!app->webserver_started) {
         return ESP_OK;
     }
 
-    mdns_ip_addr_t address = {};
-    if (!get_web_mdns_address(&address)) {
+    mdns_ip_addr_t addresses[2] = {};
+    if (!get_web_mdns_addresses(addresses)) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    const bool use_local_hostname = web_mdns_uses_local_hostname();
+    char local_hostname[MDNS_NAME_BUF_LEN] = {};
+    ESP_RETURN_ON_ERROR(mdns_hostname_get(local_hostname), TAG, "Matter mdns responder not ready");
+    const bool use_local_hostname = std::strcmp(local_hostname, kWebMdnsHostname) == 0;
     if (!use_local_hostname) {
         esp_err_t host_err = mdns_hostname_exists(kWebMdnsHostname)
-                                 ? mdns_delegate_hostname_set_address(kWebMdnsHostname, &address)
-                                 : mdns_delegate_hostname_add(kWebMdnsHostname, &address);
+                                 ? mdns_delegate_hostname_set_address(kWebMdnsHostname, addresses)
+                                 : mdns_delegate_hostname_add(kWebMdnsHostname, addresses);
         ESP_RETURN_ON_ERROR(host_err, TAG, "web mdns hostname update failed");
     }
 
     const char *service_host = use_local_hostname ? nullptr : kWebMdnsHostname;
-    if (mdns_service_exists(kWebMdnsServiceType, kWebMdnsServiceProto, service_host)) {
-        esp_err_t remove_err = mdns_service_remove_for_host(NULL, kWebMdnsServiceType, kWebMdnsServiceProto,
-                                                            service_host);
-        if (remove_err != ESP_OK && remove_err != ESP_ERR_NOT_FOUND) {
-            ESP_RETURN_ON_ERROR(remove_err, TAG, "web mdns service remove failed");
-        }
+    if (!mdns_service_exists(kWebMdnsServiceType, kWebMdnsServiceProto, service_host)) {
+        mdns_txt_item_t txt[] = {{"path", "/"}};
+        ESP_RETURN_ON_ERROR(mdns_service_add_for_host(kWebMdnsInstance, kWebMdnsServiceType, kWebMdnsServiceProto,
+                                                      service_host, kWebServerPort, txt, 1),
+                            TAG, "web mdns service add failed");
     }
-
-    mdns_txt_item_t txt[] = {{"path", "/"}};
-    ESP_RETURN_ON_ERROR(mdns_service_add_for_host(kWebMdnsInstance, kWebMdnsServiceType, kWebMdnsServiceProto,
-                                                  service_host, kWebServerPort, txt, 1),
-                        TAG, "web mdns service add failed");
 
     ESP_LOGI(TAG, "web UI advertised via http://%s.local/", kWebMdnsHostname);
     return ESP_OK;
@@ -327,11 +344,9 @@ static void network_ip_event_handler(void *arg, esp_event_base_t event_base, int
     }
 
     esp_err_t err = refresh_web_mdns_alias(app);
-    if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_INVALID_ARG) {
-        ESP_LOGI(TAG, "web mdns waiting for Matter mdns initialization to finish");
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "web mdns update deferred: %s", esp_err_to_name(err));
         schedule_web_mdns_retry(app);
-    } else if (err != ESP_OK) {
-        ESP_LOGW(TAG, "web mdns update failed: %s", esp_err_to_name(err));
     }
 }
 
@@ -339,39 +354,41 @@ static void web_mdns_retry_task(void *arg)
 {
     app_context_t *app = static_cast<app_context_t *>(arg);
 
-    for (uint8_t attempt = 0; attempt < WEB_MDNS_MAX_RETRIES; ++attempt) {
-        vTaskDelay(WEB_MDNS_RETRY_DELAY);
+    TickType_t delay = WEB_MDNS_RETRY_DELAY;
+    uint32_t attempt = 0;
+    while (app->webserver_started) {
+        vTaskDelay(delay);
 
         esp_err_t err = refresh_web_mdns_alias(app);
         if (err == ESP_OK) {
-            app->web_mdns_retry_pending = false;
+            app->web_mdns_retry_pending.store(false);
             vTaskDelete(NULL);
             return;
         }
 
-        if (err != ESP_ERR_INVALID_STATE && err != ESP_ERR_INVALID_ARG) {
-            ESP_LOGW(TAG, "web mdns retry failed: %s", esp_err_to_name(err));
-            app->web_mdns_retry_pending = false;
-            vTaskDelete(NULL);
-            return;
+        ++attempt;
+        if (attempt == 1 || attempt % 10 == 0) {
+            ESP_LOGW(TAG, "web mdns retry %lu deferred: %s", static_cast<unsigned long>(attempt),
+                     esp_err_to_name(err));
+        }
+        if (delay < WEB_MDNS_MAX_RETRY_DELAY) {
+            delay = std::min(delay * 2, WEB_MDNS_MAX_RETRY_DELAY);
         }
     }
 
-    ESP_LOGW(TAG, "web mdns publish did not become ready after retries");
-    app->web_mdns_retry_pending = false;
+    app->web_mdns_retry_pending.store(false);
     vTaskDelete(NULL);
 }
 
 static void schedule_web_mdns_retry(app_context_t *app)
 {
-    if (app->web_mdns_retry_pending) {
+    if (app->web_mdns_retry_pending.exchange(true)) {
         return;
     }
 
-    app->web_mdns_retry_pending = true;
     BaseType_t task_ok = xTaskCreate(web_mdns_retry_task, "web_mdns_retry", 4096, app, 5, NULL);
     if (task_ok != pdPASS) {
-        app->web_mdns_retry_pending = false;
+        app->web_mdns_retry_pending.store(false);
         ESP_LOGW(TAG, "failed to create web mdns retry task");
     }
 }
@@ -445,6 +462,9 @@ static esp_err_t read_current_input_value(app_context_t *app, ddc_vcp_value_t *v
     size_t matched_count = 0;
 
     for (uint8_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
+        if (!app->config.inputs[index].enabled) {
+            continue;
+        }
         uint8_t candidate = app->config.inputs[index].value;
         if (!mccs_input_matches_lg_fingerprint(candidate, fingerprint_value)) {
             continue;
@@ -734,12 +754,28 @@ static esp_err_t matter_input_write(uint16_t endpoint_id, bool on, void *ctx)
 static esp_err_t apply_config_cb(const display_config_t *config, void *ctx)
 {
     app_context_t *app = static_cast<app_context_t *>(ctx);
-    app->config = *config;
-    app->config.user_override = true;
-    app->config.profile_cached = false;
-    app->config.db_match = false;
-    ESP_RETURN_ON_ERROR(matter_sync_input_endpoints(&app->config), TAG, "input endpoint sync failed");
-    ESP_RETURN_ON_ERROR(config_save_user(&app->config), TAG, "save user config failed");
+    display_config_t previous = app->config;
+    display_config_t updated = *config;
+    updated.user_override = true;
+    updated.profile_cached = false;
+    updated.db_match = false;
+
+    esp_err_t err = matter_sync_input_endpoints(&updated);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "input endpoint sync failed, restoring previous mapping: %s", esp_err_to_name(err));
+        matter_sync_input_endpoints(&previous);
+        return err;
+    }
+
+    err = config_save_user(&updated);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "save user config failed, restoring previous mapping: %s", esp_err_to_name(err));
+        matter_sync_input_endpoints(&previous);
+        return err;
+    }
+
+    app->config = updated;
+    sync_runtime_state(app);
     return ESP_OK;
 }
 
@@ -783,12 +819,15 @@ static esp_err_t probe_inputs_cb(void *ctx)
         restore_value_valid = true;
         discovered[discovered_count++] = restore_value;
         ESP_LOGW(TAG, "using last requested input 0x%02X as probe restore target", restore_value);
-    } else {
+    } else if (app->last_known_mode < INPUT_SLOT_COUNT && app->config.inputs[app->last_known_mode].enabled &&
+               app->config.inputs[app->last_known_mode].value != 0) {
         restore_value = app->config.inputs[app->last_known_mode].value;
         restore_value_valid = true;
         discovered[discovered_count++] = restore_value;
         ESP_LOGW(TAG, "live input readback unavailable; falling back to slot %u value 0x%02X for restore",
                  (unsigned int)app->last_known_mode, restore_value);
+    } else {
+        ESP_LOGW(TAG, "live input readback unavailable and no safe restore input is configured");
     }
 
     ESP_RETURN_ON_FALSE(restore_value_valid, ESP_ERR_NOT_SUPPORTED, TAG, "no restore input available");
@@ -843,14 +882,18 @@ static esp_err_t detect_cb(void *ctx)
 {
     app_context_t *app = static_cast<app_context_t *>(ctx);
     ESP_RETURN_ON_ERROR(detect_monitor(app, false), TAG, "detect failed");
-    return matter_sync_input_endpoints(&app->config);
+    ESP_RETURN_ON_ERROR(matter_sync_input_endpoints(&app->config), TAG, "input endpoint sync failed");
+    sync_runtime_state(app);
+    return ESP_OK;
 }
 
 static esp_err_t refresh_db_cb(void *ctx)
 {
     app_context_t *app = static_cast<app_context_t *>(ctx);
     ESP_RETURN_ON_ERROR(detect_monitor(app, true), TAG, "db refresh detect failed");
-    return matter_sync_input_endpoints(&app->config);
+    ESP_RETURN_ON_ERROR(matter_sync_input_endpoints(&app->config), TAG, "input endpoint sync failed");
+    sync_runtime_state(app);
+    return ESP_OK;
 }
 
 static esp_err_t get_level_cb(bool contrast, uint8_t vcp, ddc_vcp_value_t *value, void *ctx)
@@ -925,11 +968,10 @@ static void start_post_commissioning(app_context_t *app)
     } else {
         app->webserver_started = true;
         esp_err_t mdns_err = refresh_web_mdns_alias(app);
-        if (mdns_err == ESP_ERR_INVALID_STATE) {
-            ESP_LOGI(TAG, "web mdns will publish once the network has an IP address");
-        } else if (mdns_err != ESP_OK) {
-            ESP_LOGW(TAG, "web mdns start failed: %s", esp_err_to_name(mdns_err));
-            disable_web_mdns_alias();
+        if (mdns_err != ESP_OK) {
+            ESP_LOGI(TAG, "web mdns will retry after network and Matter DNS-SD are ready: %s",
+                     esp_err_to_name(mdns_err));
+            schedule_web_mdns_retry(app);
         }
     }
 

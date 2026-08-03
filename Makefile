@@ -31,6 +31,7 @@ FLASH_BAUD ?= 460800
 MONITOR_BAUD ?= 115200
 FLASH_BEFORE ?= default_reset
 FLASH_AFTER ?= hard_reset
+ESP_PORT_DETECTOR := $(ROOT_DIR)/scripts/detect-esp-port.sh
 DEBUG_BUILD_FLAG := -D DDC_STANDALONE_DEBUG=ON
 DEFAULT_NVS_OFFSET := $(shell awk -F, '$$1=="nvs"{gsub(/[[:space:]]/, "", $$4); print $$4}' "$(ROOT_DIR)/partitions.csv")
 DEFAULT_NVS_SIZE := $(shell awk -F, '$$1=="nvs"{gsub(/[[:space:]]/, "", $$5); print $$5}' "$(ROOT_DIR)/partitions.csv")
@@ -46,19 +47,7 @@ define run_idf
 				printf "%s" "$(PORT)"; \
 				return 0; \
 			fi; \
-			shopt -s nullglob; \
-			matches=(); \
-			for pattern in /dev/cu.usbserial* /dev/cu.usbmodem* /dev/ttyUSB* /dev/ttyACM*; do \
-				for device in $$pattern; do \
-					matches+=("$$device"); \
-				done; \
-			done; \
-			shopt -u nullglob; \
-			case "$${#matches[@]}" in \
-				0) echo "no serial port detected; pass PORT=/dev/..." >&2; return 1 ;; \
-				1) printf "%s" "$${matches[0]}" ;; \
-				*) echo "multiple serial ports detected; pass PORT=/dev/..." >&2; printf "  %s\n" "$${matches[@]}" >&2; return 1 ;; \
-			esac; \
+			IDF_PATH="$(IDF_PATH)" IDF_PYTHON="$(IDF_PYTHON)" bash "$(ESP_PORT_DETECTOR)"; \
 		}; \
 		port_arg=""; \
 		baud_arg=""; \
@@ -89,19 +78,7 @@ define run_idf_monitor
 				printf "%s" "$(PORT)"; \
 				return 0; \
 			fi; \
-			shopt -s nullglob; \
-			matches=(); \
-			for pattern in /dev/cu.usbserial* /dev/cu.usbmodem* /dev/ttyUSB* /dev/ttyACM*; do \
-				for device in $$pattern; do \
-					matches+=("$$device"); \
-				done; \
-			done; \
-			shopt -u nullglob; \
-			case "$${#matches[@]}" in \
-				0) echo "no serial port detected; pass PORT=/dev/..." >&2; return 1 ;; \
-				1) printf "%s" "$${matches[0]}" ;; \
-				*) echo "multiple serial ports detected; pass PORT=/dev/..." >&2; printf "  %s\n" "$${matches[@]}" >&2; return 1 ;; \
-			esac; \
+			IDF_PATH="$(IDF_PATH)" IDF_PYTHON="$(IDF_PYTHON)" bash "$(ESP_PORT_DETECTOR)"; \
 		}; \
 		resolved_port="$$(resolve_port)"; \
 		echo "Using serial port $$resolved_port"; \
@@ -126,19 +103,7 @@ define run_plain_monitor
 				printf "%s" "$(PORT)"; \
 				return 0; \
 			fi; \
-			shopt -s nullglob; \
-			matches=(); \
-			for pattern in /dev/cu.usbserial* /dev/cu.usbmodem* /dev/ttyUSB* /dev/ttyACM*; do \
-				for device in $$pattern; do \
-					matches+=("$$device"); \
-				done; \
-			done; \
-			shopt -u nullglob; \
-			case "$${#matches[@]}" in \
-				0) echo "no serial port detected; pass PORT=/dev/..." >&2; return 1 ;; \
-				1) printf "%s" "$${matches[0]}" ;; \
-				*) echo "multiple serial ports detected; pass PORT=/dev/..." >&2; printf "  %s\n" "$${matches[@]}" >&2; return 1 ;; \
-			esac; \
+			IDF_PATH="$(IDF_PATH)" IDF_PYTHON="$(IDF_PYTHON)" bash "$(ESP_PORT_DETECTOR)"; \
 		}; \
 		resolved_port="$$(resolve_port)"; \
 		echo "Using serial port $$resolved_port"; \
@@ -157,19 +122,7 @@ define run_esptool_flash
 				printf "%s" "$(PORT)"; \
 				return 0; \
 			fi; \
-			shopt -s nullglob; \
-			matches=(); \
-			for pattern in /dev/cu.usbserial* /dev/cu.usbmodem* /dev/ttyUSB* /dev/ttyACM*; do \
-				for device in $$pattern; do \
-					matches+=("$$device"); \
-				done; \
-			done; \
-			shopt -u nullglob; \
-			case "$${#matches[@]}" in \
-				0) echo "no serial port detected; pass PORT=/dev/..." >&2; return 1 ;; \
-				1) printf "%s" "$${matches[0]}" ;; \
-				*) echo "multiple serial ports detected; pass PORT=/dev/..." >&2; printf "  %s\n" "$${matches[@]}" >&2; return 1 ;; \
-			esac; \
+			IDF_PATH="$(IDF_PATH)" IDF_PYTHON="$(IDF_PYTHON)" bash "$(ESP_PORT_DETECTOR)"; \
 		}; \
 		resolved_port="$$(resolve_port)"; \
 		echo "Using serial port $$resolved_port"; \
@@ -198,19 +151,7 @@ define run_esptool_command
 				printf "%s" "$(PORT)"; \
 				return 0; \
 			fi; \
-			shopt -s nullglob; \
-			matches=(); \
-			for pattern in /dev/cu.usbserial* /dev/cu.usbmodem* /dev/ttyUSB* /dev/ttyACM*; do \
-				for device in $$pattern; do \
-					matches+=("$$device"); \
-				done; \
-			done; \
-			shopt -u nullglob; \
-			case "$${#matches[@]}" in \
-				0) echo "no serial port detected; pass PORT=/dev/..." >&2; return 1 ;; \
-				1) printf "%s" "$${matches[0]}" ;; \
-				*) echo "multiple serial ports detected; pass PORT=/dev/..." >&2; printf "  %s\n" "$${matches[@]}" >&2; return 1 ;; \
-			esac; \
+			IDF_PATH="$(IDF_PATH)" IDF_PYTHON="$(IDF_PYTHON)" bash "$(ESP_PORT_DETECTOR)"; \
 		}; \
 		resolved_port="$$(resolve_port)"; \
 		echo "Using serial port $$resolved_port"; \
@@ -282,14 +223,14 @@ help:
 		'  make flash-monitor PORT=... Flash and then open monitor' \
 		'  make flash-monitor-idf PORT=... Flash and then open ESP-IDF monitor' \
 		'  make flash-monitor-debug Flash the debug image and then open the plain serial monitor' \
-		'  make detect-port     Print the auto-detected serial port' \
+		'  make detect-port     Probe serial devices and print the responding ESP32 port' \
 		'  make size            Show binary size report' \
 		'  make web-installer   Stage the GitHub Pages web flasher locally' \
 		'  make ci-pages        Simulate the GitHub Pages workflow in .ci-pages/' \
 		'' \
 		'Auto-detection:' \
 		'  Uses .env.mk first, then ./ .deps, then ~/esp/esp-idf and ~/esp/esp-matter if present.' \
-		'  Flash and monitor targets auto-detect a serial port if PORT is not set.' \
+		'  Flash and monitor targets probe candidates and select the responding ESP32 if PORT is not set.' \
 		'' \
 		'Flash tuning variables:' \
 		'  FLASH_BAUD=460800 MONITOR_BAUD=115200 FLASH_BEFORE=default_reset FLASH_AFTER=hard_reset' \
@@ -387,20 +328,7 @@ flash-monitor-debug:
 	$(MAKE) monitor PORT=$(PORT) MONITOR_BAUD=$(MONITOR_BAUD)
 
 detect-port:
-	@bash -lc 'set -eo pipefail; \
-		shopt -s nullglob; \
-		matches=(); \
-		for pattern in /dev/cu.usbserial* /dev/cu.usbmodem* /dev/ttyUSB* /dev/ttyACM*; do \
-			for device in $$pattern; do \
-				matches+=("$$device"); \
-			done; \
-		done; \
-		shopt -u nullglob; \
-		case "$${#matches[@]}" in \
-			0) echo "no serial port detected"; exit 1 ;; \
-			1) printf "%s\n" "$${matches[0]}" ;; \
-			*) echo "multiple serial ports detected:"; printf "  %s\n" "$${matches[@]}"; exit 1 ;; \
-		esac'
+	@IDF_PATH="$(IDF_PATH)" IDF_PYTHON="$(IDF_PYTHON)" bash "$(ESP_PORT_DETECTOR)"
 
 size:
 	$(call run_idf,size)

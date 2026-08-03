@@ -308,7 +308,7 @@ Available build targets:
 - `make flash-monitor-idf`
 - `make web-installer`
 
-`make flash`, `make flash-safe`, `make flash-manual`, `make monitor`, `make monitor-idf`, `make flash-monitor`, and `make flash-monitor-idf` auto-detect a serial port on macOS and Linux. If more than one candidate is present, set `PORT=/dev/...` explicitly.
+`make flash`, `make flash-safe`, `make flash-manual`, `make monitor`, `make monitor-idf`, `make flash-monitor`, and `make flash-monitor-idf` probe serial candidates on macOS and Linux and automatically select the one that responds as an ESP32. If more than one ESP32 responds, set `PORT=/dev/...` explicitly. The probe resets the selected board once before the requested operation.
 
 If you want to test the device like a fresh ESP32, use one of these reset targets:
 

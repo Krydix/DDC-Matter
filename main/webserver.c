@@ -17,6 +17,13 @@ static const uint16_t HTTPD_MAX_RESP_HEADERS = 4;
 static const uint16_t HTTPD_BACKLOG_CONN = 2;
 static webserver_context_t *s_ctx;
 
+typedef enum {
+    BODY_READ_OK,
+    BODY_READ_MISSING,
+    BODY_READ_TOO_LARGE,
+    BODY_READ_FAILED,
+} body_read_result_t;
+
 typedef struct {
     uint8_t brightness_vcp;
     uint8_t contrast_vcp;
@@ -34,6 +41,7 @@ static esp_err_t send_error(httpd_req_t *req, const char *status, const char *me
 {
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_sendstr(req, message);
 }
 
@@ -44,9 +52,67 @@ static esp_err_t send_json(httpd_req_t *req, cJSON *json)
         return ESP_ERR_NO_MEM;
     }
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t err = httpd_resp_sendstr(req, text);
     free(text);
     return err;
+}
+
+static body_read_result_t receive_body(httpd_req_t *req, char *body, size_t body_size)
+{
+    static const uint8_t MAX_RECV_TIMEOUTS = 3;
+    if (req->content_len <= 0) {
+        return BODY_READ_MISSING;
+    }
+    if ((size_t)req->content_len >= body_size) {
+        return BODY_READ_TOO_LARGE;
+    }
+
+    size_t total = 0;
+    uint8_t timeout_count = 0;
+    while (total < (size_t)req->content_len) {
+        int received = httpd_req_recv(req, body + total, req->content_len - total);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (++timeout_count >= MAX_RECV_TIMEOUTS) {
+                return BODY_READ_FAILED;
+            }
+            continue;
+        }
+        if (received <= 0) {
+            return BODY_READ_FAILED;
+        }
+        total += (size_t)received;
+    }
+    body[total] = '\0';
+    return BODY_READ_OK;
+}
+
+static esp_err_t send_body_read_error(httpd_req_t *req, body_read_result_t result)
+{
+    if (result == BODY_READ_TOO_LARGE) {
+        return send_error(req, "413 Payload Too Large", "{\"ok\":false,\"error\":\"request body too large\"}");
+    }
+    if (result == BODY_READ_MISSING) {
+        return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"missing body\"}");
+    }
+    return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"incomplete body\"}");
+}
+
+static bool json_number_is_u8(const cJSON *item)
+{
+    return cJSON_IsNumber(item) && item->valuedouble >= 0 && item->valuedouble <= UINT8_MAX &&
+           item->valuedouble == (double)item->valueint;
+}
+
+static bool parse_u8_text(const char *text, uint8_t *value)
+{
+    char *end = NULL;
+    unsigned long parsed = strtoul(text, &end, 0);
+    if (text[0] == '\0' || end == text || *end != '\0' || parsed > UINT8_MAX) {
+        return false;
+    }
+    *value = (uint8_t)parsed;
+    return true;
 }
 
 static cJSON *build_config_json(void)
@@ -92,10 +158,10 @@ static void parse_level_query(httpd_req_t *req, level_request_t *request)
 
     char value[8] = {0};
     if (httpd_query_key_value(query, "brightnessVcp", value, sizeof(value)) == ESP_OK) {
-        request->brightness_vcp = (uint8_t)strtoul(value, NULL, 0);
+        parse_u8_text(value, &request->brightness_vcp);
     }
     if (httpd_query_key_value(query, "contrastVcp", value, sizeof(value)) == ESP_OK) {
-        request->contrast_vcp = (uint8_t)strtoul(value, NULL, 0);
+        parse_u8_text(value, &request->contrast_vcp);
     }
 }
 
@@ -103,10 +169,10 @@ static void parse_level_json(cJSON *json, level_request_t *request)
 {
     cJSON *brightness = cJSON_GetObjectItemCaseSensitive(json, "brightnessVcp");
     cJSON *contrast = cJSON_GetObjectItemCaseSensitive(json, "contrastVcp");
-    if (cJSON_IsNumber(brightness)) {
+    if (json_number_is_u8(brightness)) {
         request->brightness_vcp = (uint8_t)brightness->valueint;
     }
-    if (cJSON_IsNumber(contrast)) {
+    if (json_number_is_u8(contrast)) {
         request->contrast_vcp = (uint8_t)contrast->valueint;
     }
 }
@@ -183,6 +249,7 @@ static cJSON *build_input_source_json(void)
 static esp_err_t index_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, (const char *)frontend_index_html_start,
                            frontend_index_html_end - frontend_index_html_start);
 }
@@ -227,13 +294,14 @@ static esp_err_t get_input_source_handler(httpd_req_t *req)
 static esp_err_t save_config_handler(httpd_req_t *req)
 {
     char body[1536] = {0};
-    int received = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (received <= 0) {
-        return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"missing body\"}");
+    body_read_result_t body_result = receive_body(req, body, sizeof(body));
+    if (body_result != BODY_READ_OK) {
+        return send_body_read_error(req, body_result);
     }
 
     cJSON *json = cJSON_Parse(body);
-    if (json == NULL) {
+    if (!cJSON_IsObject(json)) {
+        cJSON_Delete(json);
         return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid json\"}");
     }
 
@@ -241,10 +309,22 @@ static esp_err_t save_config_handler(httpd_req_t *req)
     cJSON *brightness = cJSON_GetObjectItemCaseSensitive(json, "brightnessVcp");
     cJSON *contrast = cJSON_GetObjectItemCaseSensitive(json, "contrastVcp");
     cJSON *inputs = cJSON_GetObjectItemCaseSensitive(json, "inputs");
-    if (cJSON_IsNumber(brightness)) {
+    if (brightness != NULL && !json_number_is_u8(brightness)) {
+        cJSON_Delete(json);
+        return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid brightness VCP\"}");
+    }
+    if (contrast != NULL && !json_number_is_u8(contrast)) {
+        cJSON_Delete(json);
+        return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid contrast VCP\"}");
+    }
+    if (inputs != NULL && (!cJSON_IsArray(inputs) || cJSON_GetArraySize(inputs) > INPUT_SLOT_COUNT)) {
+        cJSON_Delete(json);
+        return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid inputs array\"}");
+    }
+    if (json_number_is_u8(brightness)) {
         updated.brightness_vcp = (uint8_t)brightness->valueint;
     }
-    if (cJSON_IsNumber(contrast)) {
+    if (json_number_is_u8(contrast)) {
         updated.contrast_vcp = (uint8_t)contrast->valueint;
     }
     if (cJSON_IsArray(inputs)) {
@@ -258,7 +338,14 @@ static esp_err_t save_config_handler(httpd_req_t *req)
             cJSON *enabled = cJSON_GetObjectItemCaseSensitive(input, "enabled");
             cJSON *name = cJSON_GetObjectItemCaseSensitive(input, "name");
             cJSON *wake_on_lan_mac = cJSON_GetObjectItemCaseSensitive(input, "wakeOnLanMac");
-            if (cJSON_IsNumber(value)) {
+            if (!cJSON_IsObject(input) || (value != NULL && !json_number_is_u8(value)) ||
+                (enabled != NULL && !cJSON_IsBool(enabled)) ||
+                (name != NULL && (!cJSON_IsString(name) || name->valuestring == NULL ||
+                                  strlen(name->valuestring) >= sizeof(updated.inputs[i].name)))) {
+                cJSON_Delete(json);
+                return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid input mapping\"}");
+            }
+            if (json_number_is_u8(value)) {
                 updated.inputs[i].value = (uint8_t)value->valueint;
             }
             if (cJSON_IsBool(enabled)) {
@@ -293,16 +380,18 @@ static esp_err_t save_config_handler(httpd_req_t *req)
 static esp_err_t test_input_handler(httpd_req_t *req)
 {
     char body[128] = {0};
-    int received = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (received <= 0) {
-        return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"missing body\"}");
+    body_read_result_t body_result = receive_body(req, body, sizeof(body));
+    if (body_result != BODY_READ_OK) {
+        return send_body_read_error(req, body_result);
     }
     cJSON *json = cJSON_Parse(body);
-    if (json == NULL) {
+    if (!cJSON_IsObject(json)) {
+        cJSON_Delete(json);
         return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid json\"}");
     }
     cJSON *value = cJSON_GetObjectItemCaseSensitive(json, "value");
-    esp_err_t err = cJSON_IsNumber(value) ? s_ctx->test_input((uint8_t)value->valueint, s_ctx->ctx) : ESP_ERR_INVALID_ARG;
+    esp_err_t err = json_number_is_u8(value) && s_ctx->test_input ?
+        s_ctx->test_input((uint8_t)value->valueint, s_ctx->ctx) : ESP_ERR_INVALID_ARG;
     cJSON_Delete(json);
     if (err != ESP_OK) {
         return send_error(req, "500 Internal Server Error", "{\"ok\":false,\"error\":\"test failed\"}");
@@ -322,13 +411,14 @@ static esp_err_t probe_inputs_handler(httpd_req_t *req)
 static esp_err_t set_level_handler(httpd_req_t *req)
 {
     char body[160] = {0};
-    int received = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (received <= 0) {
-        return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"missing body\"}");
+    body_read_result_t body_result = receive_body(req, body, sizeof(body));
+    if (body_result != BODY_READ_OK) {
+        return send_body_read_error(req, body_result);
     }
 
     cJSON *json = cJSON_Parse(body);
-    if (json == NULL) {
+    if (!cJSON_IsObject(json)) {
+        cJSON_Delete(json);
         return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid json\"}");
     }
 
@@ -339,9 +429,9 @@ static esp_err_t set_level_handler(httpd_req_t *req)
     parse_level_json(json, &request);
     bool contrast = cJSON_IsString(kind) && kind->valuestring != NULL && strcmp(kind->valuestring, "contrast") == 0;
     bool brightness = cJSON_IsString(kind) && kind->valuestring != NULL && strcmp(kind->valuestring, "brightness") == 0;
-    uint8_t requested_value = cJSON_IsNumber(value) ? (uint8_t)value->valueint : 0;
+    uint8_t requested_value = json_number_is_u8(value) ? (uint8_t)value->valueint : 0;
     uint8_t vcp = contrast ? request.contrast_vcp : request.brightness_vcp;
-    esp_err_t err = (brightness || contrast) && cJSON_IsNumber(value) && s_ctx->set_level ?
+    esp_err_t err = (brightness || contrast) && json_number_is_u8(value) && s_ctx->set_level ?
         s_ctx->set_level(contrast, vcp, requested_value, s_ctx->ctx) :
         ESP_ERR_INVALID_ARG;
     cJSON_Delete(json);

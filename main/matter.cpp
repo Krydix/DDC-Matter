@@ -53,11 +53,6 @@ static uint8_t ddc_level_to_matter_level(uint8_t ddc_level)
     return static_cast<uint8_t>((static_cast<uint16_t>(clamped) * 254U + 50U) / 100U);
 }
 
-struct CommissioningWindowRequest {
-    TaskHandle_t waiting_task;
-    esp_err_t result;
-};
-
 struct InputResetRequest {
     uint16_t endpoint_id;
 };
@@ -78,21 +73,6 @@ struct EndpointUserLabelState {
     size_t length = 0;
     std::array<UserLabelStorage, chip::DeviceLayer::kMaxUserLabelListLength> labels = {};
 };
-
-static void open_commissioning_window_work(intptr_t arg)
-{
-    auto *request = reinterpret_cast<CommissioningWindowRequest *>(arg);
-    CHIP_ERROR err = chip::Server::GetInstance().GetCommissioningWindowManager().OpenBasicCommissioningWindow(
-        chip::System::Clock::Seconds32(kCommissioningWindowTimeoutSecs));
-    request->result = (err == CHIP_NO_ERROR) ? ESP_OK : ESP_FAIL;
-    if (request->result == ESP_OK) {
-        ESP_LOGI(TAG, "basic commissioning window opened for %lu seconds",
-                 static_cast<unsigned long>(kCommissioningWindowTimeoutSecs));
-    } else {
-        ESP_LOGW(TAG, "failed to open basic commissioning window");
-    }
-    xTaskNotifyGive(request->waiting_task);
-}
 
 class DeviceInfoProviderImpl : public chip::DeviceLayer::DeviceInfoProvider {
 public:
@@ -613,24 +593,17 @@ extern "C" esp_err_t matter_sync_input_endpoints(const display_config_t *config)
 
 extern "C" esp_err_t matter_open_basic_commissioning_window(void)
 {
-    CommissioningWindowRequest request = {
-        .waiting_task = xTaskGetCurrentTaskHandle(),
-        .result = ESP_FAIL,
-    };
-
-    CHIP_ERROR err = chip::DeviceLayer::PlatformMgr().ScheduleWork(open_commissioning_window_work,
-                                                                   reinterpret_cast<intptr_t>(&request));
+    lock::ScopedChipStackLock stack_lock(portMAX_DELAY);
+    CHIP_ERROR err = chip::Server::GetInstance().GetCommissioningWindowManager().OpenBasicCommissioningWindow(
+        chip::System::Clock::Seconds32(kCommissioningWindowTimeoutSecs));
     if (err != CHIP_NO_ERROR) {
-        ESP_LOGW(TAG, "failed to schedule commissioning window work");
+        ESP_LOGW(TAG, "failed to open basic commissioning window: %" CHIP_ERROR_FORMAT, err.Format());
         return ESP_FAIL;
     }
 
-    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) == 0) {
-        ESP_LOGW(TAG, "timed out waiting for commissioning window work");
-        return ESP_ERR_TIMEOUT;
-    }
-
-    return request.result;
+    ESP_LOGI(TAG, "basic commissioning window opened for %lu seconds",
+             static_cast<unsigned long>(kCommissioningWindowTimeoutSecs));
+    return ESP_OK;
 }
 
 extern "C" bool matter_is_commissioned(void)

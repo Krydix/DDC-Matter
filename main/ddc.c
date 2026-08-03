@@ -17,6 +17,8 @@ static const uint8_t kGetVcpResponseOpcode = 0x02;
 static const uint8_t kStandardInputVcp = 0x60;
 static const uint8_t kAlternateInputVcp = 0xF4;
 static const TickType_t kGetVcpResponseDelay = pdMS_TO_TICKS(200);
+static const TickType_t kCapabilitiesResponseDelay = pdMS_TO_TICKS(200);
+static const uint8_t kCapabilitiesReplyOpcode = 0xE3;
 
 static esp_err_t ddc_set_vcp_target_locked(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, uint16_t value);
 static esp_err_t ddc_get_vcp_target_locked(ddc_bus_t *bus, uint8_t ddc_dest, uint8_t vcp_code, ddc_vcp_value_t *value);
@@ -250,6 +252,7 @@ esp_err_t ddc_query_capabilities(ddc_bus_t *bus, char *buffer, size_t len)
     }
 
     size_t offset = 0;
+    esp_err_t err = ESP_OK;
     buffer[0] = '\0';
     ESP_RETURN_ON_ERROR(ddc_lock_bus(bus), TAG, "lock failed");
 
@@ -267,17 +270,46 @@ esp_err_t ddc_query_capabilities(ddc_bus_t *bus, char *buffer, size_t len)
         request[5] = 0x00;
         request[6] = ddc_checksum((DDC_CI_ADDRESS << 1), request, sizeof(request) - 1);
 
-        ESP_RETURN_ON_ERROR(i2c_master_transmit(bus->ddc_dev, request, sizeof(request), 1000), TAG, "caps tx failed");
-        ESP_RETURN_ON_ERROR(i2c_master_receive(bus->ddc_dev, response, sizeof(response), 1000), TAG, "caps rx failed");
+        err = i2c_master_transmit(bus->ddc_dev, request, sizeof(request), 1000);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "caps tx failed: %s", esp_err_to_name(err));
+            break;
+        }
+        vTaskDelay(kCapabilitiesResponseDelay);
+        err = i2c_master_receive(bus->ddc_dev, response, sizeof(response), 1000);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "caps rx failed: %s", esp_err_to_name(err));
+            break;
+        }
 
-        size_t payload_len = response[1] > 3 ? response[1] - 3 : 0;
+        /* The high bit in the DDC/CI length byte marks a control frame. The
+         * remaining length covers opcode + two-byte offset + data, followed by
+         * a checksum outside that length. */
+        size_t frame_body_len = response[1] & 0x7f;
+        if (frame_body_len < 3 || frame_body_len + 3 > sizeof(response) ||
+            response[2] != kCapabilitiesReplyOpcode) {
+            ESP_LOGW(TAG, "malformed capabilities reply length=%u opcode=0x%02X",
+                     (unsigned int)frame_body_len, response[2]);
+            err = ESP_ERR_INVALID_RESPONSE;
+            break;
+        }
+
+        size_t response_offset = ((size_t)response[3] << 8) | response[4];
+        if (response_offset != offset) {
+            ESP_LOGW(TAG, "capabilities reply offset mismatch requested=%u received=%u",
+                     (unsigned int)offset, (unsigned int)response_offset);
+            err = ESP_ERR_INVALID_RESPONSE;
+            break;
+        }
+
+        size_t payload_len = frame_body_len - 3;
         if (payload_len == 0) {
             break;
         }
         if (offset + payload_len >= (len - 1)) {
             payload_len = len - 1 - offset;
         }
-        memcpy(buffer + offset, &response[3], payload_len);
+        memcpy(buffer + offset, &response[5], payload_len);
         offset += payload_len;
         buffer[offset] = '\0';
 
@@ -287,6 +319,9 @@ esp_err_t ddc_query_capabilities(ddc_bus_t *bus, char *buffer, size_t len)
     }
 
     ddc_unlock_bus(bus);
+    if (err != ESP_OK) {
+        return err;
+    }
     return offset > 0 ? ESP_OK : ESP_FAIL;
 }
 

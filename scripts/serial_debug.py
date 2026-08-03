@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
-import glob
+from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -9,25 +10,21 @@ import serial
 
 
 DEFAULT_PROMPT = "dbg> "
-DEFAULT_PATTERNS = (
-    "/dev/cu.usbserial*",
-    "/dev/cu.usbmodem*",
-    "/dev/ttyUSB*",
-    "/dev/ttyACM*",
-)
+ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
 def detect_port() -> str:
-    matches = []
-    for pattern in DEFAULT_PATTERNS:
-        matches.extend(sorted(glob.glob(pattern)))
-
-    if not matches:
-        raise RuntimeError("no serial port detected; pass --port")
-    if len(matches) > 1:
-        joined = "\n  ".join(matches)
-        raise RuntimeError(f"multiple serial ports detected; pass --port\n  {joined}")
-    return matches[0]
+    result = subprocess.run(
+        ["make", "-s", "detect-port"],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "ESP32 detection failed"
+        raise RuntimeError(f"{detail}\npass --port to select a device explicitly")
+    return result.stdout.strip()
 
 
 def read_until_prompt(port: serial.Serial, prompt: str, timeout_s: float) -> str:
