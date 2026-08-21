@@ -5,7 +5,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPS_DIR="${DEPS_DIR:-${ROOT_DIR}/.deps}"
 ESP_IDF_VERSION="${ESP_IDF_VERSION:-v5.4.1}"
-ESP_MATTER_VERSION="${ESP_MATTER_VERSION:-release/v1.4.2}"
+# Snapshot of release/v1.4.2. Use an immutable revision so local and CI builds
+# cannot silently pick up an API-breaking branch update.
+ESP_MATTER_VERSION="${ESP_MATTER_VERSION:-2e4e0050c0bf6167f6bfc3351086c4e1126a6893}"
 IDF_PATH="${IDF_PATH:-${DEPS_DIR}/esp-idf}"
 ESP_MATTER_PATH="${ESP_MATTER_PATH:-${DEPS_DIR}/esp-matter}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -19,7 +21,8 @@ case "$(uname -s)" in
         CHIP_HOST_PLATFORM="linux"
         ;;
     *)
-        fail "unsupported host OS: $(uname -s)"
+        printf 'error: unsupported host OS: %s\n' "$(uname -s)" >&2
+        exit 1
         ;;
 esac
 
@@ -52,7 +55,10 @@ clone_or_update_repo() {
     local resolved_fetch_ref=""
     local resolved_checkout_ref=""
 
-    if git ls-remote --exit-code --heads "$repo_url" "$repo_ref" >/dev/null 2>&1; then
+    if [[ "$repo_ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        resolved_fetch_ref="$repo_ref"
+        resolved_checkout_ref="FETCH_HEAD"
+    elif git ls-remote --exit-code --heads "$repo_url" "$repo_ref" >/dev/null 2>&1; then
         resolved_fetch_ref="refs/heads/${repo_ref}"
         resolved_checkout_ref="FETCH_HEAD"
     elif git ls-remote --exit-code --tags "$repo_url" "$repo_ref" >/dev/null 2>&1; then

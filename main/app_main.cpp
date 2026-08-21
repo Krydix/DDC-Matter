@@ -9,6 +9,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -26,11 +27,14 @@ extern "C" {
 
 static const char *TAG = "app_main";
 static constexpr uint32_t POST_COMMISSION_TASK_STACK_SIZE = 8192;
+static constexpr uint32_t WEBSERVER_START_TASK_STACK_SIZE = 4096;
 static constexpr uint32_t MONITOR_WRITE_TASK_STACK_SIZE = 4096;
 static constexpr TickType_t INPUT_PROBE_SETTLE_DELAY = pdMS_TO_TICKS(1200);
 static constexpr TickType_t LG_INPUT_PROBE_SETTLE_DELAY = pdMS_TO_TICKS(5000);
 static constexpr TickType_t WEB_MDNS_RETRY_DELAY = pdMS_TO_TICKS(1000);
 static constexpr TickType_t WEB_MDNS_MAX_RETRY_DELAY = pdMS_TO_TICKS(30000);
+static constexpr TickType_t WEBSERVER_START_RETRY_DELAY = pdMS_TO_TICKS(1000);
+static constexpr uint64_t WEBSERVER_TASK_CREATE_RETRY_US = 1000000;
 static constexpr size_t MAX_PROBE_INPUT_VALUES = 24;
 static constexpr size_t MONITOR_WRITE_QUEUE_LEN = 8;
 static constexpr uint8_t LG_INPUT_FINGERPRINT_VCP = 0xF8;
@@ -61,9 +65,13 @@ typedef struct {
     matter_runtime_t matter;
     webserver_context_t web;
     bool monitor_available;
-    bool post_commission_started;
-    bool webserver_started;
+    std::atomic_bool post_commission_started;
+    std::atomic_bool post_commission_finished;
+    std::atomic_bool network_ready;
+    std::atomic_bool webserver_started;
+    std::atomic_bool webserver_start_pending;
     std::atomic_bool web_mdns_retry_pending;
+    esp_timer_handle_t webserver_start_retry_timer;
     bool last_requested_input_valid;
     uint8_t last_requested_input_value;
     uint8_t last_known_mode;
@@ -71,6 +79,7 @@ typedef struct {
 } app_context_t;
 
 static void sync_runtime_state(app_context_t *app);
+static void schedule_webserver_start(app_context_t *app);
 static void schedule_web_mdns_retry(app_context_t *app);
 static esp_err_t enqueue_monitor_write(app_context_t *app, monitor_write_kind_t kind, uint16_t endpoint_id, uint8_t value);
 static uint8_t matter_level_to_ddc_value(uint8_t matter_level);
@@ -301,7 +310,7 @@ static void wake_input_slot_if_configured(app_context_t *app, uint8_t slot)
 
 static esp_err_t refresh_web_mdns_alias(app_context_t *app)
 {
-    if (!app->webserver_started) {
+    if (!app->webserver_started.load()) {
         return ESP_OK;
     }
 
@@ -339,7 +348,13 @@ static void network_ip_event_handler(void *arg, esp_event_base_t event_base, int
     (void)event_data;
 
     app_context_t *app = static_cast<app_context_t *>(arg);
-    if (!app->post_commission_started || !app->webserver_started) {
+    app->network_ready.store(true);
+    if (!app->post_commission_started.load()) {
+        return;
+    }
+
+    if (!app->webserver_started.load()) {
+        schedule_webserver_start(app);
         return;
     }
 
@@ -356,7 +371,7 @@ static void web_mdns_retry_task(void *arg)
 
     TickType_t delay = WEB_MDNS_RETRY_DELAY;
     uint32_t attempt = 0;
-    while (app->webserver_started) {
+    while (app->webserver_started.load()) {
         vTaskDelay(delay);
 
         esp_err_t err = refresh_web_mdns_alias(app);
@@ -775,7 +790,6 @@ static esp_err_t apply_config_cb(const display_config_t *config, void *ctx)
     }
 
     app->config = updated;
-    sync_runtime_state(app);
     return ESP_OK;
 }
 
@@ -955,7 +969,9 @@ static void sync_runtime_state(app_context_t *app)
     }
 
     for (size_t index = 0; index < INPUT_SLOT_COUNT; ++index) {
-        matter_update_input_state(app->matter.input_endpoint_ids[index], false);
+        if (app->config.inputs[index].enabled) {
+            matter_update_input_state(app->matter.input_endpoint_ids[index], false);
+        }
     }
 
     ESP_LOGI(TAG, "monitor=%s pnp=%s db_match=%d", app->config.monitor_name, app->config.pnp_id, app->config.db_match);
@@ -963,26 +979,77 @@ static void sync_runtime_state(app_context_t *app)
 
 static void start_post_commissioning(app_context_t *app)
 {
-    if (webserver_start(&app->web) != ESP_OK) {
-        ESP_LOGE(TAG, "webserver start failed");
-    } else {
-        app->webserver_started = true;
-        esp_err_t mdns_err = refresh_web_mdns_alias(app);
-        if (mdns_err != ESP_OK) {
-            ESP_LOGI(TAG, "web mdns will retry after network and Matter DNS-SD are ready: %s",
-                     esp_err_to_name(mdns_err));
-            schedule_web_mdns_retry(app);
-        }
-    }
-
     esp_err_t detect_err = detect_monitor(app, false);
     if (detect_err != ESP_OK) {
         ESP_LOGW(TAG, "post-commissioning detect failed: %s", esp_err_to_name(detect_err));
     }
 
-    ESP_ERROR_CHECK(matter_sync_input_endpoints(&app->config));
+    esp_err_t sync_err = matter_sync_input_endpoints(&app->config);
+    if (sync_err != ESP_OK) {
+        ESP_LOGE(TAG, "post-commissioning input endpoint sync failed: %s", esp_err_to_name(sync_err));
+    }
 
     sync_runtime_state(app);
+    app->post_commission_finished.store(true);
+    schedule_webserver_start(app);
+}
+
+static void webserver_start_task(void *arg)
+{
+    app_context_t *app = static_cast<app_context_t *>(arg);
+    TickType_t delay = WEBSERVER_START_RETRY_DELAY;
+    uint32_t attempt = 0;
+
+    while (!app->webserver_started.load() && app->post_commission_finished.load() && app->network_ready.load()) {
+        // Wait until the 8 KiB post-commission task has released its stack and
+        // Matter has finished handling the IP event before allocating httpd.
+        vTaskDelay(delay);
+
+        esp_err_t err = webserver_start(&app->web);
+        if (err == ESP_OK) {
+            app->webserver_started.store(true);
+            esp_err_t mdns_err = refresh_web_mdns_alias(app);
+            if (mdns_err != ESP_OK) {
+                ESP_LOGI(TAG, "web mdns will retry after Matter DNS-SD is ready: %s", esp_err_to_name(mdns_err));
+                schedule_web_mdns_retry(app);
+            }
+            app->webserver_start_pending.store(false);
+            vTaskDelete(NULL);
+            return;
+        }
+
+        ++attempt;
+        ESP_LOGW(TAG, "webserver start attempt %lu deferred: %s", static_cast<unsigned long>(attempt),
+                 esp_err_to_name(err));
+        delay = std::min(delay * 2, pdMS_TO_TICKS(30000));
+    }
+
+    app->webserver_start_pending.store(false);
+    vTaskDelete(NULL);
+}
+
+static void schedule_webserver_start(app_context_t *app)
+{
+    if (app->webserver_started.load() || !app->post_commission_finished.load() || !app->network_ready.load() ||
+        app->webserver_start_pending.exchange(true)) {
+        return;
+    }
+
+    BaseType_t task_ok =
+        xTaskCreate(webserver_start_task, "webserver_start", WEBSERVER_START_TASK_STACK_SIZE, app, 5, NULL);
+    if (task_ok != pdPASS) {
+        app->webserver_start_pending.store(false);
+        ESP_LOGW(TAG, "failed to create webserver start task; retrying after post-commission memory is released");
+        esp_err_t timer_err = esp_timer_start_once(app->webserver_start_retry_timer, WEBSERVER_TASK_CREATE_RETRY_US);
+        if (timer_err != ESP_OK && timer_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "failed to schedule webserver task retry: %s", esp_err_to_name(timer_err));
+        }
+    }
+}
+
+static void webserver_start_retry_timer_cb(void *arg)
+{
+    schedule_webserver_start(static_cast<app_context_t *>(arg));
 }
 
 static void post_commission_task(void *arg)
@@ -993,15 +1060,14 @@ static void post_commission_task(void *arg)
 
 static esp_err_t schedule_post_commissioning(app_context_t *app)
 {
-    if (app->post_commission_started) {
+    if (app->post_commission_started.exchange(true)) {
         return ESP_OK;
     }
 
-    app->post_commission_started = true;
     BaseType_t task_ok = xTaskCreate(post_commission_task, "post_commission", POST_COMMISSION_TASK_STACK_SIZE,
                                      app, 5, NULL);
     if (task_ok != pdPASS) {
-        app->post_commission_started = false;
+        app->post_commission_started.store(false);
         ESP_LOGE(TAG, "failed to create post-commission task");
         return ESP_ERR_NO_MEM;
     }
@@ -1034,10 +1100,6 @@ extern "C" void app_main(void)
     callbacks.input_write = matter_input_write;
     callbacks.commissioning_complete = matter_commissioning_complete;
     callbacks.ctx = &app;
-    ESP_ERROR_CHECK(matter_start(&app.config, &app.matter, &callbacks));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &network_ip_event_handler, &app));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &network_ip_event_handler, &app));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, &network_ip_event_handler, &app));
 
     app.web.config = &app.config;
     app.web.profile = &app.profile;
@@ -1051,6 +1113,22 @@ extern "C" void app_main(void)
     app.web.open_commissioning_window = open_commissioning_window_cb;
     app.web.get_input_source_state = get_input_source_state_cb;
     app.web.ctx = &app;
+
+    const esp_timer_create_args_t webserver_retry_timer_args = {
+        .callback = webserver_start_retry_timer_cb,
+        .arg = &app,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "web_start_retry",
+        .skip_unhandled_events = true,
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&webserver_retry_timer_args, &app.webserver_start_retry_timer));
+
+    ESP_ERROR_CHECK(matter_start(&app.config, &app.matter, &callbacks));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &network_ip_event_handler, &app));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &network_ip_event_handler, &app));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, &network_ip_event_handler, &app));
+    app.network_ready.store(get_primary_netif() != nullptr);
+    schedule_webserver_start(&app);
 
     if (matter_is_commissioned()) {
         ESP_LOGI(TAG, "device already commissioned; open a new commissioning window from the web UI to add another controller");

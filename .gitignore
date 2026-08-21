@@ -13,6 +13,7 @@ managed_components/
 # IDE / OS
 .vscode/
 .idea/
+.history/
 *.DS_Store
 *.swp
 *.swo

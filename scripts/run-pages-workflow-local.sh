@@ -9,6 +9,7 @@ DEPS_DIR="${CI_PAGES_DEPS_DIR:-${STATE_DIR}/deps}"
 BIN_DIR="${CI_PAGES_BIN_DIR:-${STATE_DIR}/bin}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 FRESH_DEPS="${CI_PAGES_FRESH_DEPS:-0}"
+SOURCE_REF="${CI_PAGES_SOURCE_REF:-}"
 
 log() {
     printf '==> %s\n' "$*"
@@ -55,6 +56,13 @@ sync_workspace() {
     rm -rf "$WORK_DIR"
     mkdir -p "$WORK_DIR" "$DEPS_DIR"
 
+    if [[ -n "$SOURCE_REF" ]]; then
+        git -C "$ROOT_DIR" rev-parse --verify "${SOURCE_REF}^{commit}" >/dev/null 2>&1 || \
+            fail "invalid CI_PAGES_SOURCE_REF: ${SOURCE_REF}"
+        git -C "$ROOT_DIR" archive "$SOURCE_REF" | tar -x -C "$WORK_DIR"
+        return
+    fi
+
     if command -v rsync >/dev/null 2>&1; then
         rsync -a \
             --delete \
@@ -65,6 +73,8 @@ sync_workspace() {
             --exclude '.venv/' \
             --exclude 'build/' \
             --exclude 'build-debug/' \
+            --exclude 'sdkconfig' \
+            --exclude 'sdkconfig.old' \
             "$ROOT_DIR/" "$WORK_DIR/"
         return
     fi
@@ -75,6 +85,7 @@ sync_workspace() {
 need_cmd git
 need_cmd make
 need_cmd ninja
+need_cmd tar
 check_python
 prepare_python_shims
 
@@ -86,7 +97,11 @@ if [[ "$FRESH_DEPS" == "1" ]]; then
     rm -rf "$DEPS_DIR"
 fi
 
-log "Syncing current workspace into $WORK_DIR"
+if [[ -n "$SOURCE_REF" ]]; then
+    log "Exporting committed tree ${SOURCE_REF} into $WORK_DIR"
+else
+    log "Syncing current workspace into $WORK_DIR"
+fi
 sync_workspace
 
 cd "$WORK_DIR"
@@ -101,7 +116,7 @@ log "Building firmware in isolated Pages workspace"
 make build
 
 log "Staging GitHub Pages web installer"
-SOURCE_GIT_ROOT="$ROOT_DIR" make web-installer
+SOURCE_GIT_ROOT="$ROOT_DIR" SOURCE_GIT_REF="${SOURCE_REF:-HEAD}" make web-installer
 
 printf '%s\n' \
     "Pages simulation completed." \

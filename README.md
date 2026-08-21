@@ -13,7 +13,7 @@ It uses **DDC/CI over I²C** to read the monitor's EDID, query and set VCP codes
 | **EDID identification** | Reads 128-byte EDID from I²C address `0x50`; parses PnP manufacturer ID and monitor name |
 | **DDC/CI control** | Brightness (VCP `0x10`), Contrast (VCP `0x12`), Input Source (VCP `0x60`) |
 | **Monitor database** | Fetches monitor profile XML from ddccontrol-db by PnP ID to map input values to human-readable labels |
-| **Matter device** | Brightness → Level Control endpoint; Contrast → Level Control endpoint; Input → Mode Select endpoint |
+| **Matter bridge** | DDC/CI controls exposed as named bridged lights with live add/remove/rename support |
 | **Web config UI** | HTTP single-page app for reviewing configuration, testing live brightness/contrast/input writes, and saving overrides after commissioning completes |
 | **BLE commissioning** | Standard esp-matter BLE + QR-code commissioning flow |
 | **NVS persistence** | User config and cached monitor profiles survive reboots |
@@ -77,13 +77,17 @@ On every boot (and on demand via the web UI), the firmware resolves the monitor'
 
 ## Matter Endpoints
 
-| Endpoint | Cluster | Maps to |
-|---|---|---|
-| 1 | Level Control (`0x0008`) | Brightness — VCP `0x10` |
-| 2 | Level Control (`0x0008`) | Contrast — VCP `0x12` |
-| 3 | Mode Select (`0x0050`) | Input source — VCP `0x60`, up to 4 inputs |
+The ESP32 is modeled as a Matter bridge because it translates the non-Matter DDC/CI monitor into Matter devices.
 
-Input slots are populated from the monitor detection chain above and stored in NVS.
+| Role | Device type / cluster | Maps to |
+|---|---|---|
+| Root | Root Node | ESP32 Matter node |
+| Bridge | Aggregator | Parent of all DDC/CI bridged devices |
+| Brightness | Bridged Dimmable Light / Level Control (`0x0008`) | VCP `0x10` |
+| Contrast | Bridged Dimmable Light / Level Control (`0x0008`) | VCP `0x12` |
+| Each enabled input | Bridged On/Off Light / On/Off (`0x0006`) | Input source selection, up to 5 inputs |
+
+Each bridged control has a stable `UniqueID` and endpoint ID. Input slots are populated from the monitor detection chain above and stored in NVS. Disabling an input removes its bridged endpoint; enabling it later resumes the same endpoint instead of creating a new accessory.
 
 ## Known Input Codes
 
@@ -190,15 +194,11 @@ Once the device is already commissioned, it will not appear as a fresh accessory
 
 ## Metadata And Naming
 
-The firmware currently sets the root Matter Basic Information metadata to `Display-Switcher` in code:
+The firmware sets the root Matter Basic Information `NodeLabel` to `Display-Switcher` in code. Product metadata continues to come from the build-time or factory device-instance configuration.
 
-- `NodeLabel`
-- `ProductName`
-- `ProductLabel`
+Commissionable DNS-SD advertisements also include `DN=Display-Switcher` as a human-readable bridge name.
 
-It also exposes endpoint labels through Matter `Fixed Label` and `User Label` clusters for brightness, contrast, and the configured input endpoints.
-
-This metadata is valid Matter-side labeling, but commissioners are free to ignore it in their UI. In particular, Apple Home may still show generic names such as `Matter Accessory`, `Light`, or `Light 2` even when these attributes are set correctly.
+Brightness, contrast, and every input are exposed as individual Bridged Nodes. Their writable `Bridged Device Basic Information.NodeLabel` values are initialized from the persistent firmware/web UI configuration on every boot. Saving a renamed input updates that Matter attribute immediately, allowing bridge-aware controllers such as Apple Home to update the bridged accessory name. If an input is disabled when renamed, its latest name is applied when it is enabled again.
 
 If later you move to factory-generated Matter data for production, `product-name`, `product-label`, and related device instance fields can also be set via `esp-matter-mfg-tool`. That may help commissioners that read factory metadata, but it still does not guarantee Apple Home will use those values as the displayed accessory or endpoint names.
 
@@ -307,6 +307,8 @@ Available build targets:
 - `make flash-monitor`
 - `make flash-monitor-idf`
 - `make web-installer`
+- `make ci-pages`
+- `make install-hooks`
 
 `make flash`, `make flash-safe`, `make flash-manual`, `make monitor`, `make monitor-idf`, `make flash-monitor`, and `make flash-monitor-idf` probe serial candidates on macOS and Linux and automatically select the one that responds as an ESP32. If more than one ESP32 responds, set `PORT=/dev/...` explicitly. The probe resets the selected board once before the requested operation.
 
@@ -317,6 +319,8 @@ If you want to test the device like a fresh ESP32, use one of these reset target
 - `make fresh-flash` performs `erase-flash` and then flashes the current firmware again.
 
 `make monitor` uses a plain serial monitor that exits with `Ctrl+C`. `make monitor-idf` uses the ESP-IDF monitor if you want its richer decoding behavior; that one still uses the ESP-IDF keybindings such as `Ctrl+]` to exit.
+
+`make ci-pages` runs the GitHub Pages firmware build and installer staging in an isolated `.ci-pages/` workspace. Run `make install-hooks` once to enable the repository's pre-push hook. The hook validates the exact outgoing commit rather than uncommitted working-tree changes, caches successful validation by commit SHA, and blocks the push if the local Pages pipeline fails. For an intentional emergency bypass, use `SKIP_CI_PAGES=1 git push`.
 
 Both monitor targets use the firmware console baud rate (`115200`) by default. This is intentionally separate from the flash baud rate (`460800` by default), because using the flash baud for the serial console will produce garbled output.
 
@@ -347,7 +351,7 @@ The firmware now builds successfully into a flashable image for ESP32 classic. T
 | Dependency | Source |
 |---|---|
 | ESP-IDF v5.x | https://github.com/espressif/esp-idf |
-| esp-matter ^1.4.2 | https://github.com/espressif/esp-matter |
+| esp-matter release/v1.4.2 snapshot `2e4e0050c0bf6167f6bfc3351086c4e1126a6893` | https://github.com/espressif/esp-matter |
 | connectedhomeip | pulled transitively by esp-matter |
 | mdns ^1.8.2 | https://github.com/espressif/esp-idf (managed component) |
 | ddccontrol-db | runtime fetch only — https://github.com/ddccontrol/ddccontrol-db |
@@ -363,7 +367,7 @@ No compile-time external dependencies beyond ESP-IDF and esp-matter.
 - EDID byte layout: https://en.wikipedia.org/wiki/Extended_Display_Identification_Data
 - ddccontrol packet implementation: [ddcutil src/base/ddc_packets.c](https://github.com/rockowitz/ddcutil)
 - esp-matter example — Level Control: `examples/light/`
-- esp-matter example — Mode Select: `examples/mode_select_device/`
+- esp-matter bridge examples: `examples/bridge_apps/`
 
 ---
 

@@ -29,7 +29,8 @@ cp "$FLASH_ARGS_JSON" "$OUT_DIR/firmware/flasher_args.json"
 touch "$OUT_DIR/.nojekyll"
 
 GIT_ROOT="${SOURCE_GIT_ROOT:-$ROOT_DIR}"
-GIT_SHA="$(git -C "$GIT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+GIT_REF="${SOURCE_GIT_REF:-HEAD}"
+GIT_SHA="$(git -C "$GIT_ROOT" rev-parse --short "$GIT_REF" 2>/dev/null || echo unknown)"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 printf '{\n  "project": "DDC-Matter",\n  "version": "%s",\n  "builtAt": "%s"\n}\n' "$GIT_SHA" "$BUILD_DATE" > "$OUT_DIR/build-info.json"

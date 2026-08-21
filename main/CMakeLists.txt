@@ -22,6 +22,7 @@ else()
         esp_matter
         esp_event
         esp_netif
+        esp_timer
         mdns
         nvs_flash
         esp_http_client

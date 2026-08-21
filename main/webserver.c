@@ -293,13 +293,20 @@ static esp_err_t get_input_source_handler(httpd_req_t *req)
 
 static esp_err_t save_config_handler(httpd_req_t *req)
 {
-    char body[1536] = {0};
-    body_read_result_t body_result = receive_body(req, body, sizeof(body));
+    const size_t body_capacity = 1536;
+    char *body = calloc(1, body_capacity);
+    if (body == NULL) {
+        return send_error(req, "500 Internal Server Error", "{\"ok\":false,\"error\":\"out of memory\"}");
+    }
+
+    body_read_result_t body_result = receive_body(req, body, body_capacity);
     if (body_result != BODY_READ_OK) {
+        free(body);
         return send_body_read_error(req, body_result);
     }
 
     cJSON *json = cJSON_Parse(body);
+    free(body);
     if (!cJSON_IsObject(json)) {
         cJSON_Delete(json);
         return send_error(req, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid json\"}");
@@ -522,17 +529,39 @@ esp_err_t webserver_start(webserver_context_t *ctx)
         .handler = open_commissioning_window_handler,
     };
 
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &index), TAG, "index register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &get_config), TAG, "config get register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &get_levels), TAG, "levels get register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &get_input_source), TAG, "input source get register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &save_config), TAG, "config post register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &test_input), TAG, "test register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &probe_inputs), TAG, "probe register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &set_level), TAG, "levels post register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &detect), TAG, "detect register failed");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &open_commissioning_window), TAG,
-                        "commissioning window register failed");
+    httpd_uri_t *handlers[] = {
+        &index,
+        &get_config,
+        &get_levels,
+        &get_input_source,
+        &save_config,
+        &test_input,
+        &probe_inputs,
+        &set_level,
+        &detect,
+        &open_commissioning_window,
+    };
+    const char *handler_names[] = {
+        "index",
+        "config get",
+        "levels get",
+        "input source get",
+        "config post",
+        "test",
+        "probe",
+        "levels post",
+        "detect",
+        "commissioning window",
+    };
+    for (size_t handler_index = 0; handler_index < sizeof(handlers) / sizeof(handlers[0]); ++handler_index) {
+        err = httpd_register_uri_handler(server, handlers[handler_index]);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "%s register failed: %s", handler_names[handler_index], esp_err_to_name(err));
+            httpd_stop(server);
+            s_ctx = NULL;
+            return err;
+        }
+    }
     ESP_LOGI(TAG, "web ui HTTP server started on port 80");
     return ESP_OK;
 }

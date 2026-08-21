@@ -194,12 +194,13 @@ define run_esptool_merge
 		echo "Wrote $(MERGED_BIN)"'
 endef
 
-.PHONY: help dev-init build build-debug merged-bin reconfigure clean clean-debug fullclean fullclean-debug flash flash-safe flash-manual flash-manual-run flash-debug flash-safe-debug erase-flash erase-nvs fresh-flash probe probe-manual monitor monitor-idf flash-monitor flash-monitor-idf flash-monitor-debug size detect-port web-installer ci-pages
+.PHONY: help dev-init install-hooks build build-debug merged-bin reconfigure clean clean-debug fullclean fullclean-debug flash flash-safe flash-manual flash-manual-run flash-debug flash-safe-debug erase-flash erase-nvs fresh-flash probe probe-manual monitor monitor-idf flash-monitor flash-monitor-idf flash-monitor-debug size detect-port web-installer ci-pages
 
 help:
 	@printf '%s\n' \
 		'Available targets:' \
 		'  make dev-init        Clone and bootstrap repo-local ESP-IDF and esp-matter dependencies' \
+		'  make install-hooks   Enable the version-controlled pre-push validation hook' \
 		'  make build           Build the firmware image' \
 		'  make build-debug     Build the standalone serial DDC debug image in build-debug/' \
 		'  make merged-bin      Create a single merged flash image for external tools' \
@@ -238,6 +239,9 @@ help:
 
 dev-init:
 	@./scripts/dev-init.sh
+
+install-hooks:
+	@./scripts/install-git-hooks.sh
 
 build:
 	$(call run_idf,build $(IDF_BUILD_ARGS))
