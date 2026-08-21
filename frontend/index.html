@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#f5f5f7">
   <title>Display Switcher</title>
+  <script>
+    (() => {
+      try {
+        const theme = localStorage.getItem("display-switcher-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch (_) {}
+    })();
+  </script>
   <style>
     :root {
       color-scheme: light;
@@ -424,6 +432,155 @@
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
     }
+
+    /* Settings-style visual layer */
+    :root {
+      color-scheme: light;
+      --canvas: #f2f2f7;
+      --surface: #fff;
+      --surface-solid: #fff;
+      --surface-raised: #fff;
+      --field: #f2f2f7;
+      --text: #000;
+      --muted: #6d6d72;
+      --faint: #8e8e93;
+      --line: rgba(60,60,67,.18);
+      --blue: #007aff;
+      --blue-hover: #087ff5;
+      --green: #34c759;
+      --icon-surface: #e9e9ee;
+      --bar: rgba(242,242,247,.82);
+      --dock: rgba(255,255,255,.88);
+      --settings-shadow: 0 12px 38px rgba(0,0,0,.08);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --canvas: #000;
+      --surface: #1c1c1e;
+      --surface-solid: #1c1c1e;
+      --surface-raised: #2c2c2e;
+      --field: #2c2c2e;
+      --text: #fff;
+      --muted: #98989f;
+      --line: rgba(84,84,88,.65);
+      --blue: #0a84ff;
+      --blue-hover: #1b8cff;
+      --icon-surface: #3a3a3c;
+      --bar: rgba(0,0,0,.78);
+      --dock: rgba(44,44,46,.9);
+      --settings-shadow: 0 14px 40px rgba(0,0,0,.32);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --canvas: #000;
+        --surface: #1c1c1e;
+        --surface-solid: #1c1c1e;
+        --surface-raised: #2c2c2e;
+        --field: #2c2c2e;
+        --text: #fff;
+        --muted: #98989f;
+        --line: rgba(84,84,88,.65);
+        --blue: #0a84ff;
+        --blue-hover: #1b8cff;
+        --icon-surface: #3a3a3c;
+        --bar: rgba(0,0,0,.78);
+        --dock: rgba(44,44,46,.9);
+        --settings-shadow: 0 14px 40px rgba(0,0,0,.32);
+      }
+    }
+    body {
+      background: var(--canvas);
+      transition: color .2s ease, background-color .2s ease;
+    }
+    .page { width: min(760px, calc(100% - 36px)); padding-top: 24px; }
+    .topbar {
+      position: sticky;
+      z-index: 10;
+      top: 0;
+      min-height: 54px;
+      margin: -24px calc((100% - 100vw)/2) 24px;
+      padding: max(10px, env(safe-area-inset-top)) max(18px, calc((100vw - 760px)/2));
+      background: var(--bar);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(24px) saturate(180%);
+      -webkit-backdrop-filter: blur(24px) saturate(180%);
+    }
+    .brand { gap: 10px; }
+    .brand-mark { width: 32px; height: 32px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,122,255,.22); }
+    .brand-mark svg { width: 19px; height: 19px; }
+    .brand-name { font-size: 17px; }
+    .connection { min-height: 28px; padding: 0 10px; background: var(--surface); border: 0; }
+    .hero { margin: 8px 2px 30px; }
+    .eyebrow { display: none; }
+    h1 { font-size: clamp(32px, 8vw, 40px); line-height: 1.08; letter-spacing: -.035em; }
+    h1 br { display: none; }
+    .hero-copy { max-width: 580px; margin-top: 8px; font-size: 15px; line-height: 1.4; }
+    .settings-group { margin-top: 28px; }
+    .group-label { margin: 0 0 8px 16px; color: var(--muted); font-size: 13px; font-weight: 500; letter-spacing: .005em; text-transform: uppercase; }
+    .group-footnote { margin: 8px 16px 0; color: var(--muted); font-size: 13px; line-height: 1.35; }
+    .card { background: var(--surface); border: 0; border-radius: 18px; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+    .overview { grid-template-columns: minmax(0,1.4fr) minmax(220px,.8fr); gap: 12px; margin-bottom: 0; }
+    .display-card, .current-card { min-height: 188px; padding: 22px; color: var(--text); background: var(--surface); }
+    .display-card::after { display: none; }
+    .section-kicker, .current-card .section-kicker, .current-input-code { color: var(--muted); }
+    .section-kicker { font-size: 13px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+    .monitor-name { margin-top: 6px; font-size: clamp(24px,4vw,32px); font-weight: 650; }
+    .meta-row { gap: 6px; }
+    .tag { padding: 6px 9px; background: var(--field); border-radius: 8px; font-size: 11px; }
+    .current-input-name { margin-top: 8px; font-size: 23px; }
+    .current-input-code { font-size: 12px; }
+    .appearance-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 16px; }
+    .appearance-title { font-size: 16px; font-weight: 500; }
+    .appearance-detail { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .theme-picker { display: grid; grid-template-columns: repeat(3,1fr); gap: 2px; padding: 3px; background: var(--field); border-radius: 10px; }
+    .theme-choice { min-width: 66px; min-height: 30px; padding: 0 10px; color: var(--muted); background: transparent; border: 0; border-radius: 8px; font-size: 12px; font-weight: 590; cursor: pointer; }
+    .theme-choice[aria-checked="true"] { color: var(--text); background: var(--surface-raised); box-shadow: 0 1px 4px rgba(0,0,0,.13); }
+    .section-card { margin-top: 0; padding: 0 20px; }
+    .section-head { align-items: center; min-height: 58px; margin: 0; padding: 10px 0; border-bottom: 1px solid var(--line); }
+    h2 { font-size: 17px; font-weight: 560; letter-spacing: -.012em; }
+    .section-note { margin-top: 3px; font-size: 12px; line-height: 1.35; }
+    .levels { display: grid; grid-template-columns: 1fr; gap: 0; }
+    .level { padding: 17px 0 14px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+    .level:first-child { border-top: 0; }
+    .level-title { font-size: 16px; font-weight: 500; }
+    .level-value { color: var(--blue); font-size: 16px; font-weight: 560; }
+    .level input[type="range"] { height: 28px; margin: 10px 0 2px; }
+    .level-meta { font-size: 11px; }
+    .inputs { gap: 0; }
+    .input-row { padding: 14px 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+    .input-row:first-child { border-top: 0; }
+    .input-row.is-disabled { opacity: .48; background: transparent; }
+    .input-index { color: #fff; background: linear-gradient(145deg,#2b95ff,#0072e8); border-radius: 9px; }
+    input[type="text"], input[type="number"] { color: var(--text); background: var(--field); border-color: transparent; }
+    .toggle-track { background: #8e8e93; }
+    .toggle input:checked + .toggle-track { background: var(--green); }
+    .button { font-weight: 590; }
+    .button.secondary { color: var(--blue); background: color-mix(in srgb,var(--blue) 12%,transparent); }
+    .button.secondary:hover { background: color-mix(in srgb,var(--blue) 18%,transparent); }
+    .button.neutral { color: var(--text); background: var(--field); }
+    .button.neutral:hover { filter: brightness(.96); }
+    summary::after { content: "›"; color: var(--faint); font-size: 26px; font-weight: 300; transition: transform .2s ease; }
+    details[open] summary::after { content: "›"; transform: rotate(90deg); }
+    .advanced-field { background: var(--field); border-radius: 12px; }
+    .diagnostic-list { border-radius: 12px; }
+    .diagnostic-row { background: var(--surface-raised); }
+    .save-dock { width: min(620px,calc(100% - 28px)); background: var(--dock); color: var(--text); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--settings-shadow); }
+    .dock-status { color: var(--muted); font-size: 12px; }
+    .dock-status strong { color: var(--text); font-size: 13px; }
+    @media (max-width: 820px) { .display-card, .current-card { min-height: 164px; } }
+    @media (max-width: 620px) {
+      .page { width: min(100% - 24px,760px); padding-top: 18px; }
+      .topbar { margin: -18px -12px 22px; padding: max(10px,env(safe-area-inset-top)) 14px 10px; }
+      .hero { margin: 6px 4px 26px; }
+      .card { border-radius: 15px; }
+      .display-card, .current-card { padding: 18px; }
+      .section-card { padding: 0 16px; }
+      .appearance-card { align-items: stretch; flex-direction: column; gap: 12px; }
+      .theme-picker { width: 100%; }
+      .theme-choice { min-height: 34px; }
+      .section-head { align-items: center; flex-direction: row; }
+    }
   </style>
 </head>
 <body>
@@ -444,97 +601,120 @@
     <main>
       <section class="hero">
         <p class="eyebrow">Display control, simplified.</p>
-        <h1>Your monitor.<br>Exactly how you want it.</h1>
-        <p class="hero-copy">Switch inputs, tune picture controls, and keep your Matter setup in sync from one quiet place.</p>
+        <h1>Display Switcher</h1>
+        <p class="hero-copy">Manage your monitor, inputs, and Matter connection.</p>
       </section>
 
-      <section class="overview" aria-label="Display overview">
-        <article class="card display-card">
+      <section class="settings-group" aria-labelledby="appearance-label">
+        <h2 class="group-label" id="appearance-label">Appearance</h2>
+        <div class="card appearance-card">
           <div>
-            <div class="section-kicker">Connected display</div>
-            <div class="monitor-name" id="monitor-name">Finding your display…</div>
+            <div class="appearance-title">Theme</div>
+            <div class="appearance-detail">Choose how this page looks.</div>
           </div>
-          <div class="meta-row">
-            <span class="tag" id="pnp-id">PnP —</span>
-            <span class="tag" id="mapping-source">Loading mapping</span>
-            <span class="tag">display-switcher.local</span>
-          </div>
-        </article>
-        <article class="card current-card">
-          <div>
-            <div class="section-kicker">Active input</div>
-            <div class="current-input-name" id="current-input-name">Reading…</div>
-            <div class="current-input-code" id="current-input-code">DDC/CI source</div>
-          </div>
-          <button class="button secondary" id="refresh-readings-btn" type="button">Refresh readings</button>
-        </article>
-      </section>
-
-      <section class="card section-card">
-        <div class="section-head">
-          <div>
-            <h2>Picture</h2>
-            <p class="section-note">Changes are sent when you release a slider.</p>
-          </div>
-        </div>
-        <div class="levels">
-          <div class="level">
-            <div class="level-title-row"><span class="level-title">Brightness</span><output class="level-value" id="brightness-level-value">—</output></div>
-            <input id="brightness-level" type="range" min="0" max="100" value="0" disabled aria-label="Brightness">
-            <div class="level-meta" id="brightness-level-meta">Waiting for monitor…</div>
-          </div>
-          <div class="level">
-            <div class="level-title-row"><span class="level-title">Contrast</span><output class="level-value" id="contrast-level-value">—</output></div>
-            <input id="contrast-level" type="range" min="0" max="100" value="0" disabled aria-label="Contrast">
-            <div class="level-meta" id="contrast-level-meta">Waiting for monitor…</div>
+          <div class="theme-picker" role="radiogroup" aria-label="Color theme">
+            <button class="theme-choice" type="button" role="radio" data-theme-choice="system">System</button>
+            <button class="theme-choice" type="button" role="radio" data-theme-choice="light">Light</button>
+            <button class="theme-choice" type="button" role="radio" data-theme-choice="dark">Dark</button>
           </div>
         </div>
       </section>
 
-      <section class="card section-card">
-        <div class="section-head">
-          <div>
-            <h2>Inputs</h2>
-            <p class="section-note">Name the sources you use and disable the rest. Wake-on-LAN is optional.</p>
-          </div>
-          <button class="button secondary" id="probe-inputs-btn" type="button">Discover inputs</button>
+      <section class="settings-group" aria-labelledby="display-label">
+        <h2 class="group-label" id="display-label">Display</h2>
+        <div class="overview" aria-label="Display overview">
+          <article class="card display-card">
+            <div>
+              <div class="section-kicker">Connected display</div>
+              <div class="monitor-name" id="monitor-name">Finding your display…</div>
+            </div>
+            <div class="meta-row">
+              <span class="tag" id="pnp-id">PnP —</span>
+              <span class="tag" id="mapping-source">Loading mapping</span>
+              <span class="tag">display-switcher.local</span>
+            </div>
+          </article>
+          <article class="card current-card">
+            <div>
+              <div class="section-kicker">Active input</div>
+              <div class="current-input-name" id="current-input-name">Reading…</div>
+              <div class="current-input-code" id="current-input-code">DDC/CI source</div>
+            </div>
+            <button class="button secondary" id="refresh-readings-btn" type="button">Refresh readings</button>
+          </article>
         </div>
-        <div class="inputs" id="inputs" aria-live="polite"></div>
       </section>
 
-      <section class="card section-card" aria-label="Advanced settings">
-        <details>
-          <summary>DDC/CI settings</summary>
-          <div class="detail-body advanced-grid">
-            <label class="advanced-field">
-              <span class="field-label">Brightness VCP code</span>
-              <input id="brightness-vcp" type="number" min="0" max="255" inputmode="numeric">
-            </label>
-            <label class="advanced-field">
-              <span class="field-label">Contrast VCP code</span>
-              <input id="contrast-vcp" type="number" min="0" max="255" inputmode="numeric">
-            </label>
-          </div>
-        </details>
-        <details>
-          <summary>Input diagnostics</summary>
-          <div class="detail-body diagnostic-list">
-            <div class="diagnostic-row"><span>Resolved source</span><span id="diagnostic-resolved">—</span></div>
-            <div class="diagnostic-row"><span>Standard VCP 0x60</span><span id="diagnostic-standard">—</span></div>
-            <div class="diagnostic-row"><span>Alternate VCP 0xF4</span><span id="diagnostic-alternate">—</span></div>
-          </div>
-        </details>
-        <details>
-          <summary>Device &amp; Matter</summary>
-          <div class="detail-body">
-            <p class="section-note">Re-detect the monitor after changing cables. Open a commissioning window to add another Matter controller.</p>
-            <div class="action-grid" style="margin-top:14px">
-              <button class="button neutral" id="detect-btn" type="button">Reload mapping</button>
-              <button class="button neutral" id="refresh-bus-btn" type="button">Probe monitor bus</button>
-              <button class="button secondary" id="commissioning-window-btn" type="button">Open Matter pairing</button>
+      <section class="settings-group" aria-labelledby="picture-label">
+        <h2 class="group-label" id="picture-label">Picture</h2>
+        <div class="card section-card">
+          <div class="levels">
+            <div class="level">
+              <div class="level-title-row"><span class="level-title">Brightness</span><output class="level-value" id="brightness-level-value">—</output></div>
+              <input id="brightness-level" type="range" min="0" max="100" value="0" disabled aria-label="Brightness">
+              <div class="level-meta" id="brightness-level-meta">Waiting for monitor…</div>
+            </div>
+            <div class="level">
+              <div class="level-title-row"><span class="level-title">Contrast</span><output class="level-value" id="contrast-level-value">—</output></div>
+              <input id="contrast-level" type="range" min="0" max="100" value="0" disabled aria-label="Contrast">
+              <div class="level-meta" id="contrast-level-meta">Waiting for monitor…</div>
             </div>
           </div>
-        </details>
+        </div>
+        <p class="group-footnote">Changes are sent to the monitor when you release a slider.</p>
+      </section>
+
+      <section class="settings-group" aria-labelledby="inputs-label">
+        <h2 class="group-label" id="inputs-label">Inputs</h2>
+        <div class="card section-card">
+          <div class="section-head">
+            <div>
+              <h2>Configured inputs</h2>
+              <p class="section-note">Name your sources and disable the ones you don’t use.</p>
+            </div>
+            <button class="button secondary" id="probe-inputs-btn" type="button">Discover</button>
+          </div>
+          <div class="inputs" id="inputs" aria-live="polite"></div>
+        </div>
+        <p class="group-footnote">Wake-on-LAN is optional and requires the target computer’s MAC address.</p>
+      </section>
+
+      <section class="settings-group" aria-labelledby="advanced-label">
+        <h2 class="group-label" id="advanced-label">Advanced</h2>
+        <div class="card section-card" aria-label="Advanced settings">
+          <details>
+            <summary>DDC/CI settings</summary>
+            <div class="detail-body advanced-grid">
+              <label class="advanced-field">
+                <span class="field-label">Brightness VCP code</span>
+                <input id="brightness-vcp" type="number" min="0" max="255" inputmode="numeric">
+              </label>
+              <label class="advanced-field">
+                <span class="field-label">Contrast VCP code</span>
+                <input id="contrast-vcp" type="number" min="0" max="255" inputmode="numeric">
+              </label>
+            </div>
+          </details>
+          <details>
+            <summary>Input diagnostics</summary>
+            <div class="detail-body diagnostic-list">
+              <div class="diagnostic-row"><span>Resolved source</span><span id="diagnostic-resolved">—</span></div>
+              <div class="diagnostic-row"><span>Standard VCP 0x60</span><span id="diagnostic-standard">—</span></div>
+              <div class="diagnostic-row"><span>Alternate VCP 0xF4</span><span id="diagnostic-alternate">—</span></div>
+            </div>
+          </details>
+          <details>
+            <summary>Device &amp; Matter</summary>
+            <div class="detail-body">
+              <p class="section-note">Re-detect the monitor after changing cables. Open a commissioning window to add another Matter controller.</p>
+              <div class="action-grid" style="margin-top:14px">
+                <button class="button neutral" id="detect-btn" type="button">Reload mapping</button>
+                <button class="button neutral" id="refresh-bus-btn" type="button">Probe monitor bus</button>
+                <button class="button secondary" id="commissioning-window-btn" type="button">Open Matter pairing</button>
+              </div>
+            </div>
+          </details>
+        </div>
       </section>
     </main>
   </div>
@@ -557,6 +737,29 @@
 
     const $ = (id) => document.getElementById(id);
     const hex = (value) => `0x${Number(value || 0).toString(16).toUpperCase().padStart(2, "0")}`;
+    const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+
+    function savedTheme() {
+      try { return localStorage.getItem("display-switcher-theme") || "system"; }
+      catch (_) { return "system"; }
+    }
+
+    function applyTheme(choice, persist = true) {
+      const theme = choice === "light" || choice === "dark" ? choice : "system";
+      if (theme === "system") delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = theme;
+      if (persist) {
+        try {
+          if (theme === "system") localStorage.removeItem("display-switcher-theme");
+          else localStorage.setItem("display-switcher-theme", theme);
+        } catch (_) {}
+      }
+      document.querySelectorAll("[data-theme-choice]").forEach((button) => {
+        button.setAttribute("aria-checked", String(button.dataset.themeChoice === theme));
+      });
+      const dark = theme === "dark" || (theme === "system" && systemDark.matches);
+      document.querySelector('meta[name="theme-color"]').content = dark ? "#000000" : "#f2f2f7";
+    }
 
     async function fetchJson(url, options = {}, timeoutMs = 20000) {
       const controller = new AbortController();
@@ -599,7 +802,9 @@
 
     function updateButtonStates() {
       document.querySelectorAll("button").forEach((button) => {
-        if (state.busy) {
+        if (button.dataset.themeChoice !== undefined) {
+          button.disabled = false;
+        } else if (state.busy) {
           button.disabled = true;
         } else if (button.id === "save-btn") {
           button.disabled = !state.dirty || !state.config;
@@ -878,6 +1083,12 @@
       }
       markDirty();
     });
+    document.querySelectorAll("[data-theme-choice]").forEach((button) => {
+      button.addEventListener("click", () => applyTheme(button.dataset.themeChoice));
+    });
+    const syncSystemTheme = () => { if (savedTheme() === "system") applyTheme("system", false); };
+    if (systemDark.addEventListener) systemDark.addEventListener("change", syncSystemTheme);
+    else systemDark.addListener(syncSystemTheme);
     $("inputs").addEventListener("change", (event) => {
       if (event.target.dataset.kind === "enabled") {
         const row = event.target.closest(".input-row");
@@ -944,6 +1155,7 @@
       finally { setBusy(false); }
     });
 
+    applyTheme(savedTheme(), false);
     refreshAll().catch(showOffline);
   </script>
 </body>
